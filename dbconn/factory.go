@@ -290,24 +290,23 @@ func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
 		secret := aws.NewSecret(cfg.AWS.PasswordSecret, awscfg)
 		return func(ctx context.Context) (Credentials, error) {
 			newSecret, err := secret.GetSecret(ctx)
-
 			if err != nil {
 				return Credentials{}, err
 			}
 
-			username, err := secret.Username(newSecret)
-			if err != nil {
+			username, ok := newSecret["username"]
+			if !ok {
 				// The username key is optional. Default to config
 				username = cfg.Username
 			}
-			password, err := secret.Password(newSecret)
-			if err != nil {
-				return Credentials{}, fmt.Errorf("error retrieving value for secret '%v'", cfg.AWS.PasswordSecret)
+			password, ok := newSecret["password"]
+			if !ok {
+				return Credentials{}, fmt.Errorf("error retrieving 'password' value for secret")
 			}
 
 			return Credentials{
-				Password: password,
-				Username: username,
+				Password: password.(string),
+				Username: username.(string),
 			}, nil
 		}, nil
 	}

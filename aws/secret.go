@@ -25,22 +25,6 @@ func NewSecret(name string, cfg aws.Config) Secret {
 	}
 }
 
-func (s Secret) Username(v map[string]interface{}) (string, error) {
-	username, ok := v["username"]
-	if !ok {
-		return "", fmt.Errorf("failed to retrieve value for key 'username'")
-	}
-	return username.(string), nil
-}
-
-func (s Secret) Password(v map[string]interface{}) (string, error) {
-	username, ok := v["password"]
-	if !ok {
-		return "", fmt.Errorf("failed to retrieve value for key 'password'")
-	}
-	return username.(string), nil
-}
-
 func (s Secret) GetSecret(ctx context.Context) (map[string]interface{}, error) {
 	input := &secretsmanager.GetSecretValueInput{
 		SecretId:     aws.String(s.name),

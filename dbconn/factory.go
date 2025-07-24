@@ -299,14 +299,22 @@ func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
 				// The username key is optional. Default to config
 				username = cfg.Username
 			}
+			usernameStr, ok := username.(string)
+			if !ok {
+				username = cfg.Username
+			}
 			password, ok := newSecret["password"]
 			if !ok {
-				return Credentials{}, fmt.Errorf("error retrieving 'password' value for secret")
+				return Credentials{}, fmt.Errorf("error retrieving 'password' value of secret")
+			}
+			passwordStr, ok := password.(string)
+			if !ok {
+				return Credentials{}, fmt.Errorf("invalid type for 'password' value of secret")
 			}
 
 			return Credentials{
-				Password: password.(string),
-				Username: username.(string),
+				Password: passwordStr,
+				Username: usernameStr,
 			}, nil
 		}, nil
 	}

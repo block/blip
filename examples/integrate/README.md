@@ -1,6 +1,6 @@
 # Blip Example: Using Integrations
 
-This example demonstrates using several different [integrations](https://cashapp.github.io/blip/v1.0/integrate) to customize Blip:
+This example demonstrates using several different to customize Blip:
 
 * Register custom metrics collector
 * Set a custom plugin

@@ -10,10 +10,10 @@ Blip was created by engineers at [Cash App](https://cash.app) and [Square](https
 
 ## Users
 
-|:book:  [Blip Documentation](https://cashapp.github.io/blip/)|
+|:book:  [Blip Documentation](https://block.github.io/blip/)|
 |---|
 
-:link: [Release Notes](https://cashapp.github.io/blip/release-notes)
+:link: [Release Notes](https://block.github.io/blip/release-notes)
 
 ## Developers
 

@@ -236,7 +236,7 @@ func (pl *Loader) Plan(monitorId string, planName string, db *sql.DB) (blip.Plan
 
 	// Point plans to either the monitor plans or shared plans. Monitors plans
 	// take precedence if set; else fall back to shared plans. Related docs:
-	// https://cashapp.github.io/blip/v1.0/plans/loading
+	// https://block.github.io/blip/plans/loading/
 	//
 	// DO NOT MODIFY plans, else you'll modify the underlying slice because Go
 	// slices are refs.

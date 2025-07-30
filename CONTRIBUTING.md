@@ -65,7 +65,7 @@ At minimum, all code contributions must meet these criteria:
 
 - [x] Passes all tests
 - [x] Has good code comments
-- [x] Updates the relevant [docs](https://cashapp.github.io/blip/)
+- [x] Updates the relevant [docs](https://block.github.io/blip/)
 - [x] Is formatted with `go fmt`
 - [x] Is idiomatic Go and well designed
 - [x] Follows existing conventions and style

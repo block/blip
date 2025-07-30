@@ -59,5 +59,3 @@ The `source` meta value for each domain is different:
 These two are difference because of the multi-level replication topology: 02 is the immediate source of 03, but 01 is the heartbeat source.
 
 **This plugin sets `repl.lag` `source` meta value to the immediate source: 02.**
-
-See [Integrate > Plugins](https://cashapp.github.io/blip/v1.0/integrate#plugins) to learn how to use plugins.

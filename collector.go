@@ -135,5 +135,5 @@ type CollectorFactory interface {
 	Make(domain string, args CollectorFactoryArgs) (Collector, error)
 }
 
-// ErrMore signals that a collector will return more values. See https://cashapp.github.io/blip/develop/collectors/#long-running.
+// ErrMore signals that a collector will return more values. See https://block.github.io/blip/develop/collectors/#long-running.
 var ErrMore = errors.New("more metrics")

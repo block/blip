@@ -1,7 +1,7 @@
 # Release Checklist
 
 This document outlines how to release a new version of Blip.
-It is not the [release notes](https://cashapp.github.io/blip/release-notes).
+It is not the [release notes](https://block.github.io/blip/about/release-notes).
 
 Review Blip [versioning](https://github.com/cashapp/blip/blob/main/CONTRIBUTING.md#versioning) guidelines.
 
@@ -15,11 +15,11 @@ First, create a branch to prepare the new version.
 
 ## 2. Documentation
 
-Second, update the [documentation](https://cashapp.github.io/blip/).
+Second, update the [documentation](https://block.github.io/blip/).
 Run `docs/serve.sh` to edit locally.
 
-- [ ] Write [release notes](https://cashapp.github.io/blip/release-notes) for the new version (maintain style: past tense one liners)
-- [ ] Check and update [Readiness](https://cashapp.github.io/blip/ready)
+- [ ] Write [release notes](https://block.github.io/blip/about/release-notes) for the new version (maintain style: past tense one liners)
+- [ ] Check and update [Readiness](https://block.github.io/blip/ready)
 - [ ] Update other pages affected by new changes (or ask contributors to update docs affected by their changes)
 - [ ] Glance over all docs to make sure nothing obvious is broken or wrong (including HTML/CSS layout)
 

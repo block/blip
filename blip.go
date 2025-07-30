@@ -168,7 +168,7 @@ type HTTPClientFactory interface {
 	MakeForSink(sinkName, monitorId string, opts, tags map[string]string) (*http.Client, error)
 }
 
-// Monitor states used for plan changing: https://cashapp.github.io/blip/plans/changing/
+// Monitor states used for plan changing: https://block.github.io/blip/plans/changing/
 const (
 	STATE_NONE      = ""
 	STATE_OFFLINE   = "offline"

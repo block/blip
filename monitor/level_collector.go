@@ -26,7 +26,7 @@ import (
 // looks roughly like: LCO -> Engine -> metric collectors -> MySQL.
 // In Run, the LCO checks every 1s for the highest level in the plan to collect.
 // For example, after 5s it'll collect levels with a frequency divisible by 5s.
-// See https://cashapp.github.io/blip/v1.0/intro/plans.
+// See https://block.github.io/blip/plans/file/.
 //
 // Metrics from MySQL flow back to the LCO as blip.Metrics, which the LCO
 // passes to blip.Plugin.TransformMetrics if specified, then to all sinks

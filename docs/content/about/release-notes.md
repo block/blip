@@ -48,7 +48,7 @@ func(metrics []*blip.Metrics) error {
   * Removed parallel level collection; made level collection serial
   * Fixed long-running domain handling
   * Added collector max runtime (CMR) context _per domain_ equal to minimum level frequency
-  * Added [`ErrMore`](https://cashapp.github.io/blip/develop/collectors/#long-running)
+  * Added [`ErrMore`](https://block.github.io/blip/develop/collectors/#long-running)
   * Added collector fault fencing: collector and its results are fenced off (dropped) if non-responsive or returns too late
   * Added domain priority: collectors are started by ascending domain frequency (e.g. 5s domain collectors start before 20s domain collectors)
 * Added `blip.Metrics.Interval` field

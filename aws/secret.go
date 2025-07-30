@@ -25,7 +25,7 @@ func NewSecret(name string, cfg aws.Config) Secret {
 	}
 }
 
-func (s Secret) Password(ctx context.Context) (string, error) {
+func (s Secret) GetSecret(ctx context.Context) (map[string]interface{}, error) {
 	input := &secretsmanager.GetSecretValueInput{
 		SecretId:     aws.String(s.name),
 		VersionStage: aws.String("AWSCURRENT"),
@@ -33,21 +33,20 @@ func (s Secret) Password(ctx context.Context) (string, error) {
 
 	sv, err := s.client.GetSecretValue(ctx, input)
 	if err != nil {
-		return "", fmt.Errorf("Secrets Manager API error: %s", err)
+		return nil, fmt.Errorf("Secrets Manager API error: %s", err)
 	}
 	blip.Debug("DEBUG: aws secret: %+v", *sv)
 
 	if sv.SecretString == nil || *sv.SecretString == "" {
-		return "", fmt.Errorf("secret string is nil or empty")
+		return nil, fmt.Errorf("secret string is nil or empty")
 	}
 
 	var v map[string]interface{}
 	if err := json.Unmarshal([]byte(*sv.SecretString), &v); err != nil {
-		return "", fmt.Errorf("cannot decode secret string as map[string]string: %s", err)
+		return nil, fmt.Errorf("cannot decode secret string as map[string]string: %s", err)
 	}
 	if v == nil {
-		return "", fmt.Errorf("secret value is 'null' literal")
+		return nil, fmt.Errorf("secret value is 'null' literal")
 	}
-
-	return v["password"].(string), nil
+	return v, nil
 }

@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -290,15 +289,32 @@ func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
 		}
 		secret := aws.NewSecret(cfg.AWS.PasswordSecret, awscfg)
 		return func(ctx context.Context) (Credentials, error) {
-			passwd, err := secret.Password(ctx)
-
+			newSecret, err := secret.GetSecret(ctx)
 			if err != nil {
 				return Credentials{}, err
 			}
 
+			username, ok := newSecret["username"]
+			if !ok {
+				// The username key is optional. Default to config
+				username = cfg.Username
+			}
+			usernameStr, ok := username.(string)
+			if !ok {
+				username = cfg.Username
+			}
+			password, ok := newSecret["password"]
+			if !ok {
+				return Credentials{}, fmt.Errorf("error retrieving 'password' value of secret")
+			}
+			passwordStr, ok := password.(string)
+			if !ok {
+				return Credentials{}, fmt.Errorf("invalid type for 'password' value of secret")
+			}
+
 			return Credentials{
-				Password: passwd,
-				Username: cfg.Username,
+				Password: passwordStr,
+				Username: usernameStr,
 			}, nil
 		}, nil
 	}
@@ -307,7 +323,7 @@ func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
 	if cfg.PasswordFile != "" {
 		blip.Debug("%s: password file", cfg.MonitorId)
 		return func(context.Context) (Credentials, error) {
-			bytes, err := ioutil.ReadFile(cfg.PasswordFile)
+			bytes, err := os.ReadFile(cfg.PasswordFile)
 			if err != nil {
 				return Credentials{}, err
 			}

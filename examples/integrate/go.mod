@@ -1,10 +1,10 @@
 module main
 
-go 1.22.2
+go 1.24
 
 replace github.com/cashapp/blip => ../../
 
-require github.com/cashapp/blip v0.0.0-00010101000000-000000000000
+require github.com/cashapp/blip v1.2.1
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -63,9 +63,10 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.25.0 // indirect
-	golang.org/x/net v0.33.0 // indirect
+	golang.org/x/net v0.40.0 // indirect
 	golang.org/x/oauth2 v0.8.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/text v0.25.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

@@ -173,7 +173,7 @@ type Plugins struct {
 	// ModifyDB modifies the *sql.DB connection pool. Use with caution.
 	ModifyDB func(*sql.DB, string)
 
-	// ParsePasswordSecret maps an AWS Secrets Manager payload to MySQL credentials.
+	// ParsePasswordSecret maps an AWS Secrets Manager payload to database credentials.
 	// If nil, Blip uses DefaultPasswordSecretParser.
 	ParsePasswordSecret PasswordSecretParser
 

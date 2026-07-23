@@ -399,6 +399,9 @@ func (c *ConfigMonitorLoader) ApplyDefaults(b Config) {
 
 type ConfigMonitor struct {
 	MonitorId string `yaml:"id"`
+	// DatabaseType selects the database-specific connection and metric module.
+	// Empty values retain Blip's historical MySQL behavior.
+	DatabaseType DatabaseType `yaml:"database-type,omitempty"`
 
 	// ConfigMySQL:
 	Socket         string `yaml:"socket,omitempty"`
@@ -419,6 +422,7 @@ type ConfigMonitor struct {
 	Heartbeat ConfigHeartbeat        `yaml:"heartbeat,omitempty"`
 	Plans     ConfigPlans            `yaml:"plans,omitempty"`
 	Plan      string                 `yaml:"plan,omitempty"`
+	Postgres  ConfigPostgres         `yaml:"postgres,omitempty"`
 	Sinks     ConfigSinks            `yaml:"sinks,omitempty"`
 	TLS       ConfigTLS              `yaml:"tls,omitempty"`
 
@@ -428,6 +432,13 @@ type ConfigMonitor struct {
 const (
 	DEFAULT_MONITOR_USERNAME        = "blip"
 	DEFAULT_MONITOR_TIMEOUT_CONNECT = "10s"
+)
+
+type DatabaseType string
+
+const (
+	DatabaseTypeMySQL    DatabaseType = "mysql"
+	DatabaseTypePostgres DatabaseType = "postgres"
 )
 
 func DefaultConfigMonitor() ConfigMonitor {
@@ -447,7 +458,35 @@ func DefaultConfigMonitor() ConfigMonitor {
 	}
 }
 
+// EffectiveDatabaseType returns the configured database type. An omitted
+// value retains Blip's historical MySQL behavior. Environment interpolation is
+// resolved here because monitor defaults are applied before the normal
+// interpolation pass.
+func (c ConfigMonitor) EffectiveDatabaseType() DatabaseType {
+	databaseType := DatabaseType(interpolateEnv(string(c.DatabaseType)))
+	if databaseType == "" {
+		return DatabaseTypeMySQL
+	}
+	return databaseType
+}
+
 func (c ConfigMonitor) Validate() error {
+	switch c.EffectiveDatabaseType() {
+	case DatabaseTypeMySQL:
+		if c.Postgres.Set() {
+			return fmt.Errorf("config.monitor.postgres requires database-type %q", DatabaseTypePostgres)
+		}
+	case DatabaseTypePostgres:
+		if c.Socket != "" {
+			return fmt.Errorf("config.monitor.socket is only supported for database-type %q", DatabaseTypeMySQL)
+		}
+		if c.MyCnf != "" {
+			return fmt.Errorf("config.monitor.mycnf is only supported for database-type %q", DatabaseTypeMySQL)
+		}
+		return c.Postgres.Validate()
+	default:
+		return fmt.Errorf("config.monitor.database-type: invalid database type %q", c.DatabaseType)
+	}
 	return nil
 }
 
@@ -464,23 +503,32 @@ func (c ConfigMonitor) redacted(seen map[*ConfigMonitor]*ConfigMonitor) ConfigMo
 }
 
 func (c *ConfigMonitor) ApplyDefaults(b Config) {
-	if c.Socket == "" {
-		c.Socket = b.MySQL.Socket
-	}
-	if c.Hostname == "" {
-		c.Hostname = b.MySQL.Hostname
-	}
-	if c.MyCnf == "" && b.MySQL.MyCnf != "" {
-		c.MyCnf = b.MySQL.MyCnf
-	}
-	if c.Username == "" && b.MySQL.Username != "" {
-		c.Username = b.MySQL.Username
-	}
-	if c.Password == "" && b.MySQL.Password != "" {
-		c.Password = b.MySQL.Password
-	}
-	if c.TimeoutConnect == "" && b.MySQL.TimeoutConnect != "" {
-		c.TimeoutConnect = b.MySQL.TimeoutConnect
+	if c.EffectiveDatabaseType() == DatabaseTypeMySQL {
+		if c.Socket == "" {
+			c.Socket = b.MySQL.Socket
+		}
+		if c.Hostname == "" {
+			c.Hostname = b.MySQL.Hostname
+		}
+		if c.MyCnf == "" && b.MySQL.MyCnf != "" {
+			c.MyCnf = b.MySQL.MyCnf
+		}
+		if c.Username == "" && b.MySQL.Username != "" {
+			c.Username = b.MySQL.Username
+		}
+		if c.Password == "" && b.MySQL.Password != "" {
+			c.Password = b.MySQL.Password
+		}
+		if c.TimeoutConnect == "" && b.MySQL.TimeoutConnect != "" {
+			c.TimeoutConnect = b.MySQL.TimeoutConnect
+		}
+	} else {
+		if c.Username == "" {
+			c.Username = DEFAULT_MONITOR_USERNAME
+		}
+		if c.TimeoutConnect == "" {
+			c.TimeoutConnect = DEFAULT_MONITOR_TIMEOUT_CONNECT
+		}
 	}
 	if len(b.Tags) > 0 {
 		if c.Tags == nil {
@@ -501,12 +549,18 @@ func (c *ConfigMonitor) ApplyDefaults(b Config) {
 	c.HA.ApplyDefaults(b)
 	c.Heartbeat.ApplyDefaults(b)
 	c.Plans.ApplyDefaults(b)
+	if c.EffectiveDatabaseType() == DatabaseTypePostgres {
+		postgresDefaults := DefaultConfigPostgres()
+		postgresDefaults.ConnectTimeout = c.TimeoutConnect
+		c.Postgres.ApplyDefaults(postgresDefaults)
+	}
 	c.Sinks.ApplyDefaults(b)
 	c.TLS.ApplyDefaults(b)
 }
 
 func (c *ConfigMonitor) InterpolateEnvVars() {
 	c.MonitorId = interpolateEnv(c.MonitorId)
+	c.DatabaseType = DatabaseType(interpolateEnv(string(c.DatabaseType)))
 	c.MyCnf = interpolateEnv(c.MyCnf)
 	c.Socket = interpolateEnv(c.Socket)
 	c.Hostname = interpolateEnv(c.Hostname)
@@ -526,6 +580,7 @@ func (c *ConfigMonitor) InterpolateEnvVars() {
 	c.Heartbeat.InterpolateEnvVars()
 	c.Plans.InterpolateEnvVars()
 	c.Plan = interpolateEnv(c.Plan)
+	c.Postgres.InterpolateEnvVars()
 	c.Sinks.InterpolateEnvVars()
 	c.TLS.InterpolateEnvVars()
 }
@@ -551,6 +606,7 @@ func (c *ConfigMonitor) InterpolateMonitor() {
 	c.Heartbeat.InterpolateMonitor(c)
 	c.Plans.InterpolateMonitor(c)
 	c.Plan = c.interpolateMon(c.Plan)
+	c.Postgres.InterpolateMonitor(c)
 	c.Sinks.InterpolateMonitor(c)
 	c.TLS.InterpolateMonitor(c)
 }
@@ -586,6 +642,8 @@ func (c *ConfigMonitor) fieldValue(f string) string {
 	switch strings.ToLower(f) {
 	case "monitorid", "monitor-id", "id":
 		return c.MonitorId
+	case "database-type":
+		return string(c.DatabaseType)
 	case "mycnf":
 		return c.MyCnf
 	case "socket":
@@ -600,6 +658,20 @@ func (c *ConfigMonitor) fieldValue(f string) string {
 		return c.PasswordFile
 	case "timeout-connect":
 		return c.TimeoutConnect
+	case "postgres.database":
+		return c.Postgres.Database
+	case "postgres.application-name":
+		return c.Postgres.ApplicationName
+	case "postgres.ssl-mode":
+		return c.Postgres.SSLMode
+	case "postgres.connect-timeout":
+		return c.Postgres.ConnectTimeout
+	case "postgres.statement-timeout":
+		return c.Postgres.StatementTimeout
+	case "postgres.lock-timeout":
+		return c.Postgres.LockTimeout
+	case "postgres.dial-address":
+		return c.Postgres.DialAddress
 	default:
 		return ""
 	}

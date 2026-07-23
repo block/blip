@@ -69,7 +69,7 @@ func TestPasswordSecretCredentialFuncDefaultParser(t *testing.T) {
 	defer cleanup()
 
 	f := factory{awsConfig: testAWSConfigFactory{cfg: awscfg}}
-	credentialFunc, err := f.passwordSecretCredentialFunc(blip.ConfigMonitor{
+	credentialFunc, err := f.Credentials(blip.ConfigMonitor{
 		Hostname: "db.example.com",
 		Username: "config-user",
 		AWS: blip.ConfigAWS{
@@ -116,7 +116,7 @@ func TestPasswordSecretCredentialFuncCustomParser(t *testing.T) {
 			return nil
 		},
 	}
-	credentialFunc, err := f.passwordSecretCredentialFunc(blip.ConfigMonitor{
+	credentialFunc, err := f.Credentials(blip.ConfigMonitor{
 		Hostname: "db.example.com",
 		Username: "config-user",
 		AWS: blip.ConfigAWS{
@@ -154,7 +154,7 @@ func TestPasswordSecretCredentialFuncParserError(t *testing.T) {
 			return parseErr
 		},
 	}
-	credentialFunc, err := f.passwordSecretCredentialFunc(blip.ConfigMonitor{
+	credentialFunc, err := f.Credentials(blip.ConfigMonitor{
 		Hostname: "db.example.com",
 		Username: "config-user",
 		AWS: blip.ConfigAWS{
@@ -187,7 +187,7 @@ func TestPasswordSecretCredentialFuncGetSecretError(t *testing.T) {
 			},
 		}},
 	}
-	credentialFunc, err := f.passwordSecretCredentialFunc(blip.ConfigMonitor{
+	credentialFunc, err := f.Credentials(blip.ConfigMonitor{
 		Hostname: "db.example.com",
 		Username: "config-user",
 		AWS: blip.ConfigAWS{
@@ -209,7 +209,7 @@ func TestPasswordSecretCredentialFuncAWSConfigError(t *testing.T) {
 	configErr := errors.New("aws config")
 	f := factory{awsConfig: testAWSConfigFactory{err: configErr}}
 
-	_, err := f.passwordSecretCredentialFunc(blip.ConfigMonitor{
+	_, err := f.Credentials(blip.ConfigMonitor{
 		Hostname: "db.example.com",
 		Username: "config-user",
 		AWS: blip.ConfigAWS{

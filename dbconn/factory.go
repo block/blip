@@ -19,6 +19,7 @@ import (
 
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/aws"
+	"github.com/cashapp/blip/v2/credentials"
 )
 
 // rdsAddr matches Amazon RDS hostnames with optional :port suffix.
@@ -274,46 +275,9 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 // credentials are fetched via a reload func, even a static credential specified
 // in the Blip config file.
 func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
-
-	// Amazon IAM auth token (valid 15 min)
-	if blip.True(cfg.AWS.IAMAuth) {
-		blip.Debug("%s: AWS IAM auth token password", cfg.MonitorId)
-		awscfg, err := f.awsConfig.Make(blip.AWS{Region: cfg.AWS.Region}, cfg.Hostname)
-		if err != nil {
-			return nil, err
-		}
-		token := aws.NewAuthToken(cfg.Username, cfg.Hostname, awscfg)
-		return func(ctx context.Context) (blip.DbCredentials, error) {
-			passwd, err := token.Password(ctx)
-			if err != nil {
-				return blip.DbCredentials{}, err
-			}
-
-			return blip.DbCredentials{
-				Password: passwd,
-				Username: cfg.Username,
-			}, nil
-		}, nil
-	}
-
-	// Amazon Secrets Manager, could be rotated
-	if cfg.AWS.PasswordSecret != "" {
-		return f.passwordSecretCredentialFunc(cfg)
-	}
-
-	// Password file, could be "rotated" (new password written to file)
-	if cfg.PasswordFile != "" {
-		blip.Debug("%s: password file", cfg.MonitorId)
-		return func(context.Context) (blip.DbCredentials, error) {
-			bytes, err := os.ReadFile(cfg.PasswordFile)
-			if err != nil {
-				return blip.DbCredentials{}, err
-			}
-			return blip.DbCredentials{
-				Password: string(bytes),
-				Username: cfg.Username,
-			}, err
-		}, nil
+	credentialFunc, selected, err := credentials.NewFactory(f.awsConfig, f.passwordSecretParser).Dynamic(cfg)
+	if err != nil || selected {
+		return credentialFunc, err
 	}
 
 	// Credentials in my.cnf file, could be rotated (username and/or password, along with TLS config)
@@ -332,47 +296,7 @@ func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
 		}, nil
 	}
 
-	// Static password in Blip config file, not rotated
-	if cfg.Password != "" {
-		blip.Debug("%s: static password credentials", cfg.MonitorId)
-		return func(context.Context) (blip.DbCredentials, error) {
-			return blip.DbCredentials{Password: cfg.Password, Username: cfg.Username}, nil
-		}, nil
-	}
-
-	blip.Debug("%s: no password", cfg.MonitorId)
-	return func(context.Context) (blip.DbCredentials, error) {
-		return blip.DbCredentials{Password: "", Username: cfg.Username}, nil
-	}, nil
-}
-
-func (f factory) passwordSecretCredentialFunc(cfg blip.ConfigMonitor) (CredentialFunc, error) {
-	blip.Debug("%s: AWS Secrets Manager password", cfg.MonitorId)
-	awscfg, err := f.awsConfig.Make(blip.AWS{Region: cfg.AWS.Region}, cfg.Hostname)
-	if err != nil {
-		return nil, err
-	}
-	secret := aws.NewSecret(cfg.AWS.PasswordSecret, awscfg)
-	parser := f.passwordSecretParser
-	if parser == nil {
-		parser = blip.DefaultPasswordSecretParser
-	}
-
-	return func(ctx context.Context) (blip.DbCredentials, error) {
-		payload, err := secret.GetSecretPayload(ctx)
-		if err != nil {
-			return blip.DbCredentials{}, err
-		}
-
-		credentials := blip.DbCredentials{
-			Username: cfg.Username,
-		}
-		if err := parser(ctx, cfg, payload, &credentials); err != nil {
-			return blip.DbCredentials{}, err
-		}
-
-		return credentials, nil
-	}, nil
+	return credentials.Static(cfg), nil
 }
 
 // --------------------------------------------------------------------------

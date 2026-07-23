@@ -10,6 +10,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/credentials"
 	"github.com/cashapp/blip/v2/event"
 )
 
@@ -17,7 +18,9 @@ func init() {
 	dsndriver.SetHotswapFunc(Repo.ReloadDSN)
 }
 
-type CredentialFunc func(context.Context) (blip.DbCredentials, error)
+// CredentialFunc is retained as an alias for compatibility with integrations
+// that used the MySQL dbconn package to construct credential callbacks.
+type CredentialFunc = credentials.Func
 
 type repo struct {
 	m *sync.Map

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-test/deep"
@@ -162,5 +163,152 @@ func TestPlanShouldReturnDeepCopyOfPlan(t *testing.T) {
 			gotDomain := gotCollect[domainKey]
 			assert.NotEqual(t, fmt.Sprintf("%p", expectedDomain.Metrics), fmt.Sprintf("%p", gotDomain.Metrics))
 		}
+	}
+}
+
+type planDatabaseTypesFactory struct {
+	mock.MetricFactory
+	databaseTypes []blip.DatabaseType
+}
+
+func (f planDatabaseTypesFactory) DatabaseTypes(string) []blip.DatabaseType {
+	return f.databaseTypes
+}
+
+func TestSharedPlansValidateDatabaseCompatibilityPerMonitor(t *testing.T) {
+	const (
+		mysqlDomain    = "test.mysql-plan"
+		postgresDomain = "test.postgres-plan"
+		sharedDomain   = "test.shared-plan"
+	)
+	factory := mock.MetricFactory{}
+	if err := metrics.Register(mysqlDomain, factory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(mysqlDomain) })
+	if err := metrics.Register(postgresDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{blip.DatabaseTypePostgres},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(postgresDomain) })
+	if err := metrics.Register(sharedDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{
+			blip.DatabaseTypeMySQL,
+			blip.DatabaseTypePostgres,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(sharedDomain) })
+
+	newPlan := func(name, databaseDomain string) blip.Plan {
+		return blip.Plan{
+			Name: name,
+			Levels: map[string]blip.Level{
+				"level": {
+					Name: "level",
+					Freq: "1s",
+					Collect: map[string]blip.Domain{
+						databaseDomain: {},
+						sharedDomain:   {},
+					},
+				},
+			},
+		}
+	}
+	mysqlPlan := newPlan("mysql-plan", mysqlDomain)
+	postgresPlan := newPlan("postgres-plan", postgresDomain)
+
+	pl := plan.NewLoader(func(blip.ConfigPlans) ([]blip.Plan, error) {
+		return []blip.Plan{mysqlPlan, postgresPlan}, nil
+	})
+	if err := pl.LoadShared(blip.ConfigPlans{}, nil); err != nil {
+		t.Fatalf("LoadShared: %v", err)
+	}
+
+	// The omitted database type exercises Blip's existing MySQL default.
+	if err := pl.LoadMonitor(blip.ConfigMonitor{MonitorId: "mysql"}, nil); err != nil {
+		t.Fatalf("LoadMonitor(mysql): %v", err)
+	}
+	if err := pl.LoadMonitor(blip.ConfigMonitor{
+		MonitorId:    "postgres",
+		DatabaseType: blip.DatabaseTypePostgres,
+	}, nil); err != nil {
+		t.Fatalf("LoadMonitor(postgres): %v", err)
+	}
+
+	if _, err := pl.Plan("mysql", mysqlPlan.Name, nil); err != nil {
+		t.Fatalf("MySQL plan for MySQL monitor: %v", err)
+	}
+	if _, err := pl.Plan("postgres", postgresPlan.Name, nil); err != nil {
+		t.Fatalf("PostgreSQL plan for PostgreSQL monitor: %v", err)
+	}
+
+	if _, err := pl.Plan("mysql", postgresPlan.Name, nil); err == nil ||
+		!strings.Contains(err.Error(), `collector test.postgres-plan does not support database type "mysql" (supported: [postgres])`) {
+		t.Fatalf("PostgreSQL plan for MySQL monitor error = %v", err)
+	}
+	if _, err := pl.Plan("postgres", mysqlPlan.Name, nil); err == nil ||
+		!strings.Contains(err.Error(), `collector test.mysql-plan does not support database type "postgres" (supported: [mysql])`) {
+		t.Fatalf("MySQL plan for PostgreSQL monitor error = %v", err)
+	}
+}
+
+func TestValidatePlansRejectsCollectorsWithoutCommonDatabaseType(t *testing.T) {
+	const (
+		mysqlDomain    = "test.no-common-mysql"
+		postgresDomain = "test.no-common-postgres"
+		sharedDomain   = "test.no-common-shared"
+	)
+	if err := metrics.Register(mysqlDomain, mock.MetricFactory{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(mysqlDomain) })
+	if err := metrics.Register(postgresDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{blip.DatabaseTypePostgres},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(postgresDomain) })
+	if err := metrics.Register(sharedDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{
+			blip.DatabaseTypeMySQL,
+			blip.DatabaseTypePostgres,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(sharedDomain) })
+
+	mixedPlan := blip.Plan{
+		Name: "mixed-database-plan",
+		Levels: map[string]blip.Level{
+			"mysql": {
+				Freq: "1s",
+				Collect: map[string]blip.Domain{
+					mysqlDomain:  {},
+					sharedDomain: {},
+				},
+			},
+			"postgres": {
+				Freq: "5s",
+				Collect: map[string]blip.Domain{
+					postgresDomain: {},
+				},
+			},
+		},
+	}
+
+	err := plan.ValidatePlans([]blip.Plan{mixedPlan})
+	if err == nil {
+		t.Fatal("mixed MySQL and PostgreSQL plan is valid")
+	}
+	expected := "collectors have no common database type: " +
+		"test.no-common-mysql=[mysql], " +
+		"test.no-common-postgres=[postgres], " +
+		"test.no-common-shared=[mysql postgres]"
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("ValidatePlans error = %v", err)
 	}
 }

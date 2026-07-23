@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ type Loader struct {
 	plugin       func(blip.ConfigPlans) ([]blip.Plan, error)
 	sharedPlans  []Meta            // keyed on Plan.Name
 	monitorPlans map[string][]Meta // keyed on monitorId, Plan.Name
+	monitorTypes map[string]blip.DatabaseType
 	*sync.RWMutex
 }
 
@@ -44,6 +46,7 @@ func NewLoader(plugin func(blip.ConfigPlans) ([]blip.Plan, error)) *Loader {
 		plugin:       plugin,
 		sharedPlans:  []Meta{},
 		monitorPlans: map[string][]Meta{},
+		monitorTypes: map[string]blip.DatabaseType{},
 		RWMutex:      &sync.RWMutex{},
 	}
 }
@@ -173,6 +176,13 @@ func (pl *Loader) LoadShared(cfg blip.ConfigPlans, dbMaker blip.DbFactory) error
 func (pl *Loader) LoadMonitor(mon blip.ConfigMonitor, dbMaker blip.DbFactory) error {
 	event.Sendf(event.PLANS_LOAD_MONITOR, "%s", mon.MonitorId)
 
+	// Remember the type even when the monitor uses only shared plans. Global
+	// plan loading validates domains and options; compatibility is validated
+	// after this monitor selects one of those plans.
+	pl.Lock()
+	pl.monitorTypes[mon.MonitorId] = mon.EffectiveDatabaseType()
+	pl.Unlock()
+
 	if mon.Plans.Table == "" && len(mon.Plans.Files) == 0 {
 		blip.Debug("monitor %s uses only shared plans", mon.MonitorId)
 		return nil
@@ -286,7 +296,16 @@ func (pl *Loader) Plan(monitorId string, planName string, db *sql.DB) (blip.Plan
 	blip.Debug("%s: loading plan %s from %s", monitorId, planName, pm.Source)
 	// Since blip.Plan has field types that pass by reference (maps and slices), we want to the returned plan to
 	// be a deep copy to ensure the caller cannot modify the original shared plan.
-	return deepcopyPlan(&pm.plan)
+	loadedPlan, err := deepcopyPlan(&pm.plan)
+	if err != nil {
+		return blip.Plan{}, err
+	}
+	if databaseType, ok := pl.monitorTypes[monitorId]; ok {
+		if err := ValidatePlanDatabase(loadedPlan, databaseType); err != nil {
+			return blip.Plan{}, fmt.Errorf("monitor %s: %w", monitorId, err)
+		}
+	}
+	return loadedPlan, nil
 }
 
 func (pl *Loader) SharedPlans() []Meta {
@@ -514,6 +533,8 @@ func ValidatePlans(plans []blip.Plan) error {
 			continue
 		}
 
+		validDomains := true
+
 		// Second level validation: PlanLoader checks that domains exist, and
 		// domain options vs collector help
 		for levelName := range plans[i].Levels {
@@ -532,6 +553,7 @@ func ValidatePlans(plans []blip.Plan) error {
 					var err error
 					mc, err = metrics.Make(domainName, blip.CollectorFactoryArgs{Validate: true})
 					if err != nil {
+						validDomains = false
 						errMsgs = append(errMsgs, fmt.Sprintf("invalid plan: %s: at %s/%s: %s",
 							plans[i].Name, levelName, domainName, err))
 						continue DOMAINS
@@ -551,6 +573,12 @@ func ValidatePlans(plans []blip.Plan) error {
 				}
 			}
 		}
+
+		if validDomains {
+			if err := validatePlanDatabaseCompatibility(plans[i]); err != nil {
+				errMsgs = append(errMsgs, fmt.Sprintf("invalid plan: %s: %s", plans[i].Name, err))
+			}
+		}
 	}
 
 	// Third level validation is each collector Prepare, called by monitor/Engine.Prepare
@@ -559,6 +587,85 @@ func ValidatePlans(plans []blip.Plan) error {
 		return fmt.Errorf("%d plan validation errors:\n%s", len(errMsgs), strings.Join(errMsgs, "\n"))
 	}
 
+	return nil
+}
+
+func validatePlanDatabaseCompatibility(plan blip.Plan) error {
+	domainSet := map[string]struct{}{}
+	for _, level := range plan.Levels {
+		for domain := range level.Collect {
+			domainSet[domain] = struct{}{}
+		}
+	}
+	if len(domainSet) == 0 {
+		return nil
+	}
+
+	domains := make([]string, 0, len(domainSet))
+	for domain := range domainSet {
+		domains = append(domains, domain)
+	}
+	sort.Strings(domains)
+
+	commonTypes := map[blip.DatabaseType]bool{}
+	domainTypes := make([]string, 0, len(domains))
+	for i, domain := range domains {
+		supportedTypes, err := metrics.SupportedDatabaseTypes(domain)
+		if err != nil {
+			return err
+		}
+		domainTypes = append(domainTypes, fmt.Sprintf("%s=%v", domain, supportedTypes))
+
+		supported := map[blip.DatabaseType]bool{}
+		for _, databaseType := range supportedTypes {
+			supported[databaseType] = true
+			if i == 0 {
+				commonTypes[databaseType] = true
+			}
+		}
+		if i == 0 {
+			continue
+		}
+		for databaseType := range commonTypes {
+			if !supported[databaseType] {
+				delete(commonTypes, databaseType)
+			}
+		}
+	}
+
+	if len(commonTypes) == 0 {
+		return fmt.Errorf("collectors have no common database type: %s", strings.Join(domainTypes, ", "))
+	}
+	return nil
+}
+
+// ValidatePlanDatabase returns nil if every collector in the plan supports the
+// monitor's database type. Global plan loading cannot perform this validation
+// because one set of shared plans can serve monitors of different types.
+func ValidatePlanDatabase(plan blip.Plan, databaseType blip.DatabaseType) error {
+	domainSet := map[string]struct{}{}
+	for _, level := range plan.Levels {
+		for domain := range level.Collect {
+			domainSet[domain] = struct{}{}
+		}
+	}
+
+	domains := make([]string, 0, len(domainSet))
+	for domain := range domainSet {
+		domains = append(domains, domain)
+	}
+	sort.Strings(domains)
+
+	errMsgs := []string{}
+	for _, domain := range domains {
+		if err := metrics.ValidateDatabase(domain, databaseType); err != nil {
+			errMsgs = append(errMsgs, err.Error())
+		}
+	}
+	if len(errMsgs) > 0 {
+		return fmt.Errorf("plan %s is incompatible with database type %q:\n%s",
+			plan.Name, databaseType, strings.Join(errMsgs, "\n"))
+	}
 	return nil
 }
 

@@ -49,6 +49,12 @@ And each domain has a domain-specific configuration that includes:
 
 These values are documented for each [domain]({{< ref "/metrics/domains" >}}) and printed on the command line by [`--print-domains`]({{< ref "/config/blip#--print-domains" >}}).
 
+All domains in a plan, across every level, must support at least one common
+database type. A MySQL-only domain and a domain that supports both MySQL and
+PostgreSQL can share a plan, but a MySQL-only domain and a PostgreSQL-only
+domain cannot. A shared plan configuration can still contain separate plans
+for different database types.
+
 Since Blip automatically levels up overlapping frequencies (described in [Intro / Plans]({{< ref "intro/plans" >}})), it's conventional to define levels from most to least frequent, as in this example:
 
 ```yaml

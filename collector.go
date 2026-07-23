@@ -22,8 +22,8 @@ type Collector interface {
 	// Prepare prepares a plan for future calls to Collect. The return function
 	// is called once when the collector is destroyed; it allows the collector
 	// to clean up. If Prepare returns an error, Blip will retry preparing the
-	// plan. Therefore, Prepare should not retry on error (for example, if MySQL
-	// is not online yet).
+	// plan. Therefore, Prepare should not retry on error (for example, if the
+	// database is not online yet).
 	Prepare(ctx context.Context, plan Plan) (func(), error)
 
 	// Collect collects metrics for the previously prepared plan. Collect is only
@@ -111,13 +111,14 @@ func (h CollectorHelp) Validate(opts map[string]string) error {
 // a Collector. The factory must use the args to create the collector.
 type CollectorFactoryArgs struct {
 	// Config is the full and final monitor config. Most collectors do not need
-	// this, but some that collect metrics outside MySQL, like cloud metrics,
+	// this, but some that collect metrics outside the database, like cloud metrics,
 	// might need additional monitor config values.
 	Config ConfigMonitor
 
-	// DB is the connection to MySQL. It is safe for concurrent use, and it is
-	// used concurrently by other parts of a monitor. The Collector must not
-	// modify the connection, reconnect, and so forth--only use the connection.
+	// DB is the monitor's database connection. It is safe for concurrent use,
+	// and it is used concurrently by other parts of a monitor. The Collector
+	// must not modify the connection, reconnect, and so forth--only use the
+	// connection.
 	DB *sql.DB
 
 	// MonitorId is the monitor identifier. The Collector must include
@@ -133,6 +134,18 @@ type CollectorFactoryArgs struct {
 // A CollectorFactory makes one or more Collector.
 type CollectorFactory interface {
 	Make(domain string, args CollectorFactoryArgs) (Collector, error)
+}
+
+// CollectorFactoryDatabaseTypes is an optional CollectorFactory capability
+// that identifies the database types supported by a domain. Factories that do
+// not implement this interface retain Blip's historical MySQL behavior.
+//
+// The domain argument allows one factory to serve domains with different
+// compatibility, such as MySQL collectors and database-neutral cloud metrics.
+// Implementations must return at least one database type.
+type CollectorFactoryDatabaseTypes interface {
+	CollectorFactory
+	DatabaseTypes(domain string) []DatabaseType
 }
 
 // ErrMore signals that a collector will return more values. See https://block.github.io/blip/develop/collectors/#long-running.

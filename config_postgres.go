@@ -15,6 +15,8 @@ const (
 	DEFAULT_POSTGRES_MAX_IDLE_CONNECTIONS     = 2
 	DEFAULT_POSTGRES_MAX_CONNECTION_IDLE_TIME = "30s"
 	DEFAULT_POSTGRES_MAX_CONNECTION_LIFETIME  = "0"
+	DEFAULT_POSTGRES_DATABASE_REFRESH         = "5m"
+	DEFAULT_POSTGRES_DATABASE_MAX_CONCURRENCY = 4
 )
 
 // ConfigPostgres configures the PostgreSQL database/sql pool owned by one
@@ -22,22 +24,36 @@ const (
 // monitor-level fields so all Blip credential sources can be shared by
 // database-specific connection factories.
 type ConfigPostgres struct {
-	Database              string `yaml:"database,omitempty"`
-	ApplicationName       string `yaml:"application-name,omitempty"`
-	SSLMode               string `yaml:"ssl-mode,omitempty"`
-	MaxOpenConnections    *int   `yaml:"max-open-connections,omitempty"`
-	MaxIdleConnections    *int   `yaml:"max-idle-connections,omitempty"`
-	MaxConnectionIdleTime string `yaml:"max-connection-idle-time,omitempty"`
-	MaxConnectionLifetime string `yaml:"max-connection-lifetime,omitempty"`
-	ConnectTimeout        string `yaml:"connect-timeout,omitempty"`
-	StatementTimeout      string `yaml:"statement-timeout,omitempty"`
-	LockTimeout           string `yaml:"lock-timeout,omitempty"`
-	DialAddress           string `yaml:"dial-address,omitempty"`
+	Database              string                  `yaml:"database,omitempty"`
+	Databases             ConfigPostgresDatabases `yaml:"databases,omitempty"`
+	ApplicationName       string                  `yaml:"application-name,omitempty"`
+	SSLMode               string                  `yaml:"ssl-mode,omitempty"`
+	MaxOpenConnections    *int                    `yaml:"max-open-connections,omitempty"`
+	MaxIdleConnections    *int                    `yaml:"max-idle-connections,omitempty"`
+	MaxConnectionIdleTime string                  `yaml:"max-connection-idle-time,omitempty"`
+	MaxConnectionLifetime string                  `yaml:"max-connection-lifetime,omitempty"`
+	ConnectTimeout        string                  `yaml:"connect-timeout,omitempty"`
+	StatementTimeout      string                  `yaml:"statement-timeout,omitempty"`
+	LockTimeout           string                  `yaml:"lock-timeout,omitempty"`
+	DialAddress           string                  `yaml:"dial-address,omitempty"`
+}
+
+// ConfigPostgresDatabases selects the databases that database-local
+// PostgreSQL collectors monitor. An empty Include selects every eligible
+// database, and Exclude patterns always take precedence. Patterns are
+// case-sensitive and support * and ? wildcards.
+type ConfigPostgresDatabases struct {
+	Enabled        *bool    `yaml:"enabled,omitempty"`
+	Include        []string `yaml:"include,omitempty"`
+	Exclude        []string `yaml:"exclude,omitempty"`
+	Refresh        string   `yaml:"refresh,omitempty"`
+	MaxConcurrency *int     `yaml:"max-concurrency,omitempty"`
 }
 
 func DefaultConfigPostgres() ConfigPostgres {
 	return ConfigPostgres{
 		Database:              DEFAULT_POSTGRES_DATABASE,
+		Databases:             DefaultConfigPostgresDatabases(),
 		ApplicationName:       DEFAULT_POSTGRES_APPLICATION_NAME,
 		MaxOpenConnections:    postgresInt(DEFAULT_POSTGRES_MAX_OPEN_CONNECTIONS),
 		MaxIdleConnections:    postgresInt(DEFAULT_POSTGRES_MAX_IDLE_CONNECTIONS),
@@ -47,9 +63,18 @@ func DefaultConfigPostgres() ConfigPostgres {
 	}
 }
 
+func DefaultConfigPostgresDatabases() ConfigPostgresDatabases {
+	return ConfigPostgresDatabases{
+		Enabled:        postgresBool(true),
+		Refresh:        DEFAULT_POSTGRES_DATABASE_REFRESH,
+		MaxConcurrency: postgresInt(DEFAULT_POSTGRES_DATABASE_MAX_CONCURRENCY),
+	}
+}
+
 // Set reports whether a monitor explicitly contains PostgreSQL configuration.
 func (c ConfigPostgres) Set() bool {
 	return c.Database != "" ||
+		c.Databases.Set() ||
 		c.ApplicationName != "" ||
 		c.SSLMode != "" ||
 		c.MaxOpenConnections != nil ||
@@ -66,6 +91,7 @@ func (c *ConfigPostgres) ApplyDefaults(defaults ConfigPostgres) {
 	if c.Database == "" {
 		c.Database = defaults.Database
 	}
+	c.Databases.ApplyDefaults(defaults.Databases)
 	if c.ApplicationName == "" {
 		c.ApplicationName = defaults.ApplicationName
 	}
@@ -92,6 +118,30 @@ func (c *ConfigPostgres) ApplyDefaults(defaults ConfigPostgres) {
 	if c.DialAddress == "" {
 		c.DialAddress = defaults.DialAddress
 	}
+}
+
+func (c ConfigPostgresDatabases) Set() bool {
+	return c.Enabled != nil ||
+		c.Include != nil ||
+		c.Exclude != nil ||
+		c.Refresh != "" ||
+		c.MaxConcurrency != nil
+}
+
+func (c *ConfigPostgresDatabases) ApplyDefaults(defaults ConfigPostgresDatabases) {
+	if c.Enabled == nil && defaults.Enabled != nil {
+		c.Enabled = postgresBool(*defaults.Enabled)
+	}
+	if c.Include == nil && defaults.Include != nil {
+		c.Include = append([]string(nil), defaults.Include...)
+	}
+	if c.Exclude == nil && defaults.Exclude != nil {
+		c.Exclude = append([]string(nil), defaults.Exclude...)
+	}
+	if c.Refresh == "" {
+		c.Refresh = defaults.Refresh
+	}
+	c.MaxConcurrency = setPostgresInt(c.MaxConcurrency, defaults.MaxConcurrency)
 }
 
 func (c ConfigPostgres) Validate() error {
@@ -129,7 +179,37 @@ func (c ConfigPostgres) Validate() error {
 	if err := validatePostgresDuration("statement-timeout", c.StatementTimeout, true); err != nil {
 		return err
 	}
-	return validatePostgresDuration("lock-timeout", c.LockTimeout, true)
+	if err := validatePostgresDuration("lock-timeout", c.LockTimeout, true); err != nil {
+		return err
+	}
+	return c.Databases.Validate()
+}
+
+func (c ConfigPostgresDatabases) Validate() error {
+	if err := validatePostgresDuration("databases.refresh", c.Refresh, false); err != nil {
+		return err
+	}
+	if c.MaxConcurrency != nil && *c.MaxConcurrency <= 0 {
+		return fmt.Errorf("config.postgres.databases.max-concurrency: must be greater than zero")
+	}
+	for _, patterns := range []struct {
+		name   string
+		values []string
+	}{
+		{name: "include", values: c.Include},
+		{name: "exclude", values: c.Exclude},
+	} {
+		for _, pattern := range patterns.values {
+			if pattern == "" {
+				return fmt.Errorf("config.postgres.databases.%s: patterns cannot be empty", patterns.name)
+			}
+		}
+	}
+	return nil
+}
+
+func postgresBool(value bool) *bool {
+	return &value
 }
 
 func postgresInt(value int) *int {
@@ -164,6 +244,7 @@ func validatePostgresDuration(name, value string, allowZero bool) error {
 
 func (c *ConfigPostgres) InterpolateEnvVars() {
 	c.Database = interpolateEnv(c.Database)
+	c.Databases.InterpolateEnvVars()
 	c.ApplicationName = interpolateEnv(c.ApplicationName)
 	c.SSLMode = interpolateEnv(c.SSLMode)
 	c.MaxConnectionIdleTime = interpolateEnv(c.MaxConnectionIdleTime)
@@ -174,8 +255,19 @@ func (c *ConfigPostgres) InterpolateEnvVars() {
 	c.DialAddress = interpolateEnv(c.DialAddress)
 }
 
+func (c *ConfigPostgresDatabases) InterpolateEnvVars() {
+	for i := range c.Include {
+		c.Include[i] = interpolateEnv(c.Include[i])
+	}
+	for i := range c.Exclude {
+		c.Exclude[i] = interpolateEnv(c.Exclude[i])
+	}
+	c.Refresh = interpolateEnv(c.Refresh)
+}
+
 func (c *ConfigPostgres) InterpolateMonitor(m *ConfigMonitor) {
 	c.Database = m.interpolateMon(c.Database)
+	c.Databases.InterpolateMonitor(m)
 	c.ApplicationName = m.interpolateMon(c.ApplicationName)
 	c.SSLMode = m.interpolateMon(c.SSLMode)
 	c.MaxConnectionIdleTime = m.interpolateMon(c.MaxConnectionIdleTime)
@@ -184,4 +276,14 @@ func (c *ConfigPostgres) InterpolateMonitor(m *ConfigMonitor) {
 	c.StatementTimeout = m.interpolateMon(c.StatementTimeout)
 	c.LockTimeout = m.interpolateMon(c.LockTimeout)
 	c.DialAddress = m.interpolateMon(c.DialAddress)
+}
+
+func (c *ConfigPostgresDatabases) InterpolateMonitor(m *ConfigMonitor) {
+	for i := range c.Include {
+		c.Include[i] = m.interpolateMon(c.Include[i])
+	}
+	for i := range c.Exclude {
+		c.Exclude[i] = m.interpolateMon(c.Exclude[i])
+	}
+	c.Refresh = m.interpolateMon(c.Refresh)
 }

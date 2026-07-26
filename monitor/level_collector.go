@@ -78,13 +78,10 @@ type LevelCollectorArgs struct {
 }
 
 func NewLevelCollector(args LevelCollectorArgs) *lco {
-	return NewLevelCollectorWithDBProvider(args, nil)
+	return newLevelCollectorWithDBProvider(args, nil)
 }
 
-// NewLevelCollectorWithDBProvider creates a level collector with an optional
-// monitor-owned database provider. NewLevelCollector remains the
-// backward-compatible constructor for single-connection callers.
-func NewLevelCollectorWithDBProvider(args LevelCollectorArgs, dbProvider blip.DbProvider) *lco {
+func newLevelCollectorWithDBProvider(args LevelCollectorArgs, dbProvider blip.DbProvider) *lco {
 	return &lco{
 		cfg:              args.Config,
 		planLoader:       args.PlanLoader,
@@ -92,7 +89,7 @@ func NewLevelCollectorWithDBProvider(args LevelCollectorArgs, dbProvider blip.Db
 		transformMetrics: args.TransformMetrics,
 		// --
 		monitorId:   args.Config.MonitorId,
-		engine:      NewEngineWithProvider(args.Config, args.DB, dbProvider),
+		engine:      newEngineWithDBProvider(args.Config, args.DB, dbProvider),
 		stateMux:    &sync.Mutex{},
 		paused:      true,
 		changeMux:   &sync.Mutex{},

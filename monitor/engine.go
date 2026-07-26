@@ -61,13 +61,10 @@ type Engine struct {
 }
 
 func NewEngine(cfg blip.ConfigMonitor, db *sql.DB) *Engine {
-	return NewEngineWithProvider(cfg, db, nil)
+	return newEngineWithDBProvider(cfg, db, nil)
 }
 
-// NewEngineWithProvider creates an Engine with an optional monitor-owned
-// database provider. NewEngine remains the backward-compatible constructor for
-// callers that only have one database connection.
-func NewEngineWithProvider(cfg blip.ConfigMonitor, db *sql.DB, dbProvider blip.DbProvider) *Engine {
+func newEngineWithDBProvider(cfg blip.ConfigMonitor, db *sql.DB, dbProvider blip.DbProvider) *Engine {
 	return &Engine{
 		cfg:        cfg,
 		db:         db,

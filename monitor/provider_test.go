@@ -131,9 +131,9 @@ func TestMonitorCloseDBClosesProviderOnce(t *testing.T) {
 	}
 }
 
-func TestNewEngineWithProviderRetainsProvider(t *testing.T) {
+func TestNewEngineWithDBProviderRetainsProvider(t *testing.T) {
 	provider := &testDBProvider{primary: &sql.DB{}}
-	engine := NewEngineWithProvider(blip.ConfigMonitor{MonitorId: "engine"}, provider.primary, provider)
+	engine := newEngineWithDBProvider(blip.ConfigMonitor{MonitorId: "engine"}, provider.primary, provider)
 
 	if engine.DB() != provider.primary {
 		t.Fatalf("engine primary = %p, expected %p", engine.DB(), provider.primary)
@@ -161,7 +161,7 @@ func TestEnginePassesProviderToCollectorFactory(t *testing.T) {
 	}
 	t.Cleanup(func() { metrics.Remove(domain) })
 
-	engine := NewEngineWithProvider(
+	engine := newEngineWithDBProvider(
 		blip.ConfigMonitor{MonitorId: "provider-engine"},
 		db,
 		provider,

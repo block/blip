@@ -358,7 +358,7 @@ func (m *Monitor) startup() error {
 		m.promAPI = prom.NewAPI(
 			m.cfg.Exporter,
 			m.monitorId,
-			NewExporter(m.cfg.Exporter, promPlan, NewEngineWithProvider(m.cfg, m.db, m.dbProvider)),
+			NewExporter(m.cfg.Exporter, promPlan, newEngineWithDBProvider(m.cfg, m.db, m.dbProvider)),
 		)
 
 		m.wg.Add(1)
@@ -397,7 +397,7 @@ func (m *Monitor) startup() error {
 	// config.plans.change, then it will do this; if it's not enabled,
 	// we'll do it as the last startup step.
 	status.Monitor(m.monitorId, status.MONITOR, "starting level collector")
-	m.lco = NewLevelCollectorWithDBProvider(LevelCollectorArgs{
+	m.lco = newLevelCollectorWithDBProvider(LevelCollectorArgs{
 		Config:           m.cfg,
 		DB:               m.db,
 		PlanLoader:       m.planLoader,

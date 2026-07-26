@@ -3,6 +3,7 @@
 package metrics_test
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -14,6 +15,34 @@ import (
 type databaseTypesFactory struct {
 	mock.MetricFactory
 	databaseTypes func(string) []blip.DatabaseType
+}
+
+type providerFactory struct {
+	mock.MetricFactory
+	providerCalls int
+	provider      blip.DbProvider
+}
+
+func (f *providerFactory) MakeWithDBProvider(
+	domain string,
+	args blip.CollectorFactoryArgs,
+	provider blip.DbProvider,
+) (blip.Collector, error) {
+	f.providerCalls++
+	f.provider = provider
+	return f.MetricFactory.Make(domain, args)
+}
+
+type testProvider struct {
+	primary *sql.DB
+}
+
+func (p testProvider) Primary() *sql.DB {
+	return p.primary
+}
+
+func (testProvider) Close() error {
+	return nil
 }
 
 func (f databaseTypesFactory) DatabaseTypes(domain string) []blip.DatabaseType {
@@ -175,6 +204,61 @@ func TestRegisterDuplicateDoesNotInspectFactoryDatabaseTypes(t *testing.T) {
 	err := metrics.Register(domain, factory)
 	if err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("Register duplicate error = %v", err)
+	}
+}
+
+func TestMakeWithDBProviderUsesOptionalFactoryCapability(t *testing.T) {
+	const domain = "test.db-provider"
+	makeCalls := 0
+	factory := &providerFactory{
+		MetricFactory: mock.MetricFactory{
+			MakeFunc: func(string, blip.CollectorFactoryArgs) (blip.Collector, error) {
+				makeCalls++
+				return mock.MetricsCollector{}, nil
+			},
+		},
+	}
+	if err := metrics.Register(domain, factory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(domain) })
+
+	provider := testProvider{primary: &sql.DB{}}
+	if _, err := metrics.MakeWithDBProvider(domain, blip.CollectorFactoryArgs{}, provider); err != nil {
+		t.Fatal(err)
+	}
+	if factory.providerCalls != 1 || makeCalls != 1 {
+		t.Fatalf("factory calls: provider=%d Make=%d, expected 1 and 1",
+			factory.providerCalls, makeCalls)
+	}
+	if factory.provider != provider {
+		t.Fatalf("factory provider = %T %p, expected %T %p",
+			factory.provider, factory.provider, provider, provider)
+	}
+}
+
+func TestMakePreservesHistoricalFactoryPath(t *testing.T) {
+	const domain = "test.db-provider-legacy-make"
+	makeCalls := 0
+	factory := &providerFactory{
+		MetricFactory: mock.MetricFactory{
+			MakeFunc: func(string, blip.CollectorFactoryArgs) (blip.Collector, error) {
+				makeCalls++
+				return mock.MetricsCollector{}, nil
+			},
+		},
+	}
+	if err := metrics.Register(domain, factory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(domain) })
+
+	if _, err := metrics.Make(domain, blip.CollectorFactoryArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if factory.providerCalls != 0 || makeCalls != 1 {
+		t.Fatalf("factory calls: provider=%d Make=%d, expected 0 and 1",
+			factory.providerCalls, makeCalls)
 	}
 }
 

@@ -46,9 +46,10 @@ type collection struct {
 // stop/destroy the Engine. Like all Monitor components, an Engine is not restarted
 // or reused, it's recreated if the Monitor is restarted.
 type Engine struct {
-	cfg       blip.ConfigMonitor
-	db        *sql.DB
-	monitorId string
+	cfg        blip.ConfigMonitor
+	db         *sql.DB
+	dbProvider blip.DbProvider
+	monitorId  string
 	// --
 	event event.MonitorReceiver
 	*sync.Mutex
@@ -60,10 +61,18 @@ type Engine struct {
 }
 
 func NewEngine(cfg blip.ConfigMonitor, db *sql.DB) *Engine {
+	return NewEngineWithProvider(cfg, db, nil)
+}
+
+// NewEngineWithProvider creates an Engine with an optional monitor-owned
+// database provider. NewEngine remains the backward-compatible constructor for
+// callers that only have one database connection.
+func NewEngineWithProvider(cfg blip.ConfigMonitor, db *sql.DB, dbProvider blip.DbProvider) *Engine {
 	return &Engine{
-		cfg:       cfg,
-		db:        db,
-		monitorId: cfg.MonitorId,
+		cfg:        cfg,
+		db:         db,
+		dbProvider: dbProvider,
+		monitorId:  cfg.MonitorId,
 		// --
 		event:          event.MonitorReceiver{MonitorId: cfg.MonitorId},
 		Mutex:          &sync.Mutex{},
@@ -143,13 +152,14 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 			if _, ok := collectors[domain]; ok {
 				continue // already seen
 			}
-			c, err := metrics.Make(
+			c, err := metrics.MakeWithDBProvider(
 				domain,
 				blip.CollectorFactoryArgs{
 					Config:    e.cfg,
 					DB:        e.db,
 					MonitorId: e.monitorId,
 				},
+				e.dbProvider,
 			)
 			if err != nil {
 				lerr = fmt.Errorf("while making %s collector: %s", domain, err)

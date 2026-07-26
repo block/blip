@@ -218,6 +218,23 @@ type DbFactory interface {
 	Make(ConfigMonitor) (*sql.DB, string, error)
 }
 
+// DbProvider owns the database connections associated with one monitor.
+// Primary returns the connection used by existing Blip subsystems and
+// collectors. Close releases the primary connection and any additional
+// database-specific resources owned by the provider.
+type DbProvider interface {
+	Primary() *sql.DB
+	Close() error
+}
+
+// DbProviderFactory is an optional DbFactory capability for database engines
+// that need to own more than one connection pool per monitor. Blip preserves
+// the existing DbFactory.Make path for factories that do not implement it.
+type DbProviderFactory interface {
+	DbFactory
+	MakeProvider(ConfigMonitor) (DbProvider, string, error)
+}
+
 type HTTPClientFactory interface {
 	MakeForSink(sinkName, monitorId string, opts, tags map[string]string) (*http.Client, error)
 }

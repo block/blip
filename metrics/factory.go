@@ -167,6 +167,17 @@ func validateDatabase(domain string, databaseType blip.DatabaseType) error {
 //
 // See types in the blip package for more details.
 func Make(domain string, args blip.CollectorFactoryArgs) (blip.Collector, error) {
+	return makeWithDBProvider(domain, args, nil)
+}
+
+// MakeWithDBProvider makes a collector with an optional monitor-owned database
+// provider. Registered factories without the optional provider capability
+// continue through their historical Make method.
+func MakeWithDBProvider(domain string, args blip.CollectorFactoryArgs, provider blip.DbProvider) (blip.Collector, error) {
+	return makeWithDBProvider(domain, args, provider)
+}
+
+func makeWithDBProvider(domain string, args blip.CollectorFactoryArgs, provider blip.DbProvider) (blip.Collector, error) {
 	r.Lock()
 	defer r.Unlock()
 	registered, ok := r.factory[domain]
@@ -179,6 +190,11 @@ func Make(domain string, args blip.CollectorFactoryArgs) (blip.Collector, error)
 	if !args.Validate {
 		if err := validateDatabase(domain, args.Config.EffectiveDatabaseType()); err != nil {
 			return nil, err
+		}
+	}
+	if provider != nil {
+		if providerFactory, ok := registered.factory.(blip.CollectorFactoryWithDBProvider); ok {
+			return providerFactory.MakeWithDBProvider(domain, args, provider)
 		}
 	}
 	return registered.factory.Make(domain, args)

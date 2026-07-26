@@ -27,6 +27,7 @@ func TestConfigMonitorDatabaseTypeDefaultsToMySQLWithoutMutation(t *testing.T) {
 func TestConfigMonitorPostgresDefaultsAndInterpolation(t *testing.T) {
 	t.Setenv("BLIP_TEST_DATABASE_TYPE", "postgres")
 	t.Setenv("BLIP_TEST_POSTGRES_DATABASE", "metrics_database")
+	t.Setenv("BLIP_TEST_POSTGRES_INCLUDE", "app_*")
 	t.Setenv("BLIP_TEST_POSTGRES_DIAL_ADDRESS", "127.0.0.1:35432")
 
 	monitor := blip.ConfigMonitor{
@@ -34,7 +35,11 @@ func TestConfigMonitorPostgresDefaultsAndInterpolation(t *testing.T) {
 		DatabaseType:   "${BLIP_TEST_DATABASE_TYPE}",
 		TimeoutConnect: "7s",
 		Postgres: blip.ConfigPostgres{
-			Database:        "${BLIP_TEST_POSTGRES_DATABASE}",
+			Database: "${BLIP_TEST_POSTGRES_DATABASE}",
+			Databases: blip.ConfigPostgresDatabases{
+				Include: []string{"${BLIP_TEST_POSTGRES_INCLUDE}"},
+				Exclude: []string{"%{monitor.id}_scratch"},
+			},
 			ApplicationName: "%{monitor.id}",
 			DialAddress:     "${BLIP_TEST_POSTGRES_DIAL_ADDRESS}",
 		},
@@ -60,6 +65,22 @@ func TestConfigMonitorPostgresDefaultsAndInterpolation(t *testing.T) {
 	}
 	if monitor.Postgres.ConnectTimeout != "7s" {
 		t.Fatalf("connect timeout = %q, expected inherited monitor timeout", monitor.Postgres.ConnectTimeout)
+	}
+	if monitor.Postgres.Databases.Enabled == nil || !*monitor.Postgres.Databases.Enabled {
+		t.Fatalf("database discovery not enabled by default: %+v", monitor.Postgres.Databases.Enabled)
+	}
+	if got := monitor.Postgres.Databases.Include; len(got) != 1 || got[0] != "app_*" {
+		t.Fatalf("database includes not interpolated: %#v", got)
+	}
+	if got := monitor.Postgres.Databases.Exclude; len(got) != 1 || got[0] != "postgres-monitor_scratch" {
+		t.Fatalf("database excludes not monitor-interpolated: %#v", got)
+	}
+	if monitor.Postgres.Databases.Refresh != blip.DEFAULT_POSTGRES_DATABASE_REFRESH {
+		t.Fatalf("database refresh = %q, expected %q", monitor.Postgres.Databases.Refresh, blip.DEFAULT_POSTGRES_DATABASE_REFRESH)
+	}
+	if monitor.Postgres.Databases.MaxConcurrency == nil ||
+		*monitor.Postgres.Databases.MaxConcurrency != blip.DEFAULT_POSTGRES_DATABASE_MAX_CONCURRENCY {
+		t.Fatalf("database max concurrency not defaulted: %+v", monitor.Postgres.Databases.MaxConcurrency)
 	}
 	if monitor.Postgres.MaxOpenConnections == nil || *monitor.Postgres.MaxOpenConnections != blip.DEFAULT_POSTGRES_MAX_OPEN_CONNECTIONS {
 		t.Fatalf("max open connections not defaulted: %+v", monitor.Postgres.MaxOpenConnections)
@@ -131,6 +152,7 @@ func TestConfigPostgresAllowsExplicitUnlimitedPoolSettings(t *testing.T) {
 
 func TestConfigPostgresValidation(t *testing.T) {
 	minusOne := -1
+	zero := 0
 	one := 1
 	two := 2
 	tests := []struct {
@@ -166,6 +188,27 @@ func TestConfigPostgresValidation(t *testing.T) {
 			config:    blip.ConfigPostgres{MaxConnectionLifetime: "tomorrow"},
 			wantError: "max-connection-lifetime",
 		},
+		{
+			name: "zero database concurrency",
+			config: blip.ConfigPostgres{
+				Databases: blip.ConfigPostgresDatabases{MaxConcurrency: &zero},
+			},
+			wantError: "databases.max-concurrency",
+		},
+		{
+			name: "invalid database refresh",
+			config: blip.ConfigPostgres{
+				Databases: blip.ConfigPostgresDatabases{Refresh: "tomorrow"},
+			},
+			wantError: "databases.refresh",
+		},
+		{
+			name: "empty database include",
+			config: blip.ConfigPostgres{
+				Databases: blip.ConfigPostgresDatabases{Include: []string{""}},
+			},
+			wantError: "databases.include",
+		},
 	}
 
 	for _, tt := range tests {
@@ -175,5 +218,26 @@ func TestConfigPostgresValidation(t *testing.T) {
 				t.Fatalf("got error %v, expected it to contain %q", err, tt.wantError)
 			}
 		})
+	}
+}
+
+func TestConfigPostgresDatabasesPreservesExplicitDisabled(t *testing.T) {
+	disabled := false
+	one := 1
+	config := blip.ConfigPostgresDatabases{
+		Enabled:        &disabled,
+		Include:        []string{"app_*"},
+		MaxConcurrency: &one,
+	}
+	config.ApplyDefaults(blip.DefaultConfigPostgresDatabases())
+
+	if config.Enabled == nil || *config.Enabled {
+		t.Fatalf("explicit disabled discovery was overwritten: %+v", config.Enabled)
+	}
+	if config.MaxConcurrency == nil || *config.MaxConcurrency != 1 {
+		t.Fatalf("explicit concurrency was overwritten: %+v", config.MaxConcurrency)
+	}
+	if got := config.Include; len(got) != 1 || got[0] != "app_*" {
+		t.Fatalf("explicit includes were overwritten: %#v", got)
 	}
 }

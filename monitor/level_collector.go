@@ -78,6 +78,10 @@ type LevelCollectorArgs struct {
 }
 
 func NewLevelCollector(args LevelCollectorArgs) *lco {
+	return newLevelCollectorWithDBProvider(args, nil)
+}
+
+func newLevelCollectorWithDBProvider(args LevelCollectorArgs, dbProvider blip.DbProvider) *lco {
 	return &lco{
 		cfg:              args.Config,
 		planLoader:       args.PlanLoader,
@@ -85,7 +89,7 @@ func NewLevelCollector(args LevelCollectorArgs) *lco {
 		transformMetrics: args.TransformMetrics,
 		// --
 		monitorId:   args.Config.MonitorId,
-		engine:      NewEngine(args.Config, args.DB),
+		engine:      newEngineWithDBProvider(args.Config, args.DB, dbProvider),
 		stateMux:    &sync.Mutex{},
 		paused:      true,
 		changeMux:   &sync.Mutex{},

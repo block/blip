@@ -58,13 +58,14 @@ type Monitor struct {
 	transformMetric func([]*blip.Metrics) error
 
 	// Core components
-	runMux  *sync.RWMutex
-	db      *sql.DB
-	dsn     string // redacted (no password)
-	promAPI *prom.API
-	lco     LevelCollector
-	pch     PlanChanger
-	hbw     *heartbeat.Writer
+	runMux     *sync.RWMutex
+	db         *sql.DB
+	dbProvider blip.DbProvider
+	dsn        string // redacted (no password)
+	promAPI    *prom.API
+	lco        LevelCollector
+	pch        PlanChanger
+	hbw        *heartbeat.Writer
 
 	// Control chans and sync
 	runLoopChan chan struct{} // Stop(): stop the monitor
@@ -150,10 +151,8 @@ func (m *Monitor) Stop() error {
 	// Stop and wait for monitor subsystems
 	m.stop(false, "Stop")
 
-	// Everything should be stopped now, so close db connection
-	if m.db != nil {
-		m.db.Close()
-	}
+	// Everything should be stopped now, so close database resources.
+	m.closeDB()
 
 	event.Sendf(event.MONITOR_STOPPED, "%s", m.monitorId)
 	status.Monitor(m.monitorId, status.MONITOR, "stopped at %s", blip.FormatTime(time.Now()))
@@ -249,15 +248,22 @@ func (m *Monitor) startup() error {
 	// DB-plan loop
 	// //////////////////////////////////////////////////////////////////////
 
+	// Release database resources from an earlier failed startup or subsystem
+	// restart before creating the next monitor-owned connection set.
+	m.runMux.Lock()
+	m.closeDB()
+	m.runMux.Unlock()
+
 	// ----------------------------------------------------------------------
 	// Make DSN and *sql.DB. This does NOT connect to MySQL.
 	for {
 		status.Monitor(m.monitorId, status.MONITOR, "making DB/DSN (not connecting)")
-		db, dsnRedacted, err := m.dbMaker.Make(m.cfg)
+		dbProvider, db, dsnRedacted, err := m.makeDB()
 		m.setErr(err, false)
 		if err == nil { // success
 			m.runMux.Lock()
 			m.db = db
+			m.dbProvider = dbProvider
 			m.dsn = dsnRedacted
 			status.Monitor(m.monitorId, status.MONITOR_DSN, "%s", dsnRedacted)
 			m.runMux.Unlock()
@@ -352,7 +358,7 @@ func (m *Monitor) startup() error {
 		m.promAPI = prom.NewAPI(
 			m.cfg.Exporter,
 			m.monitorId,
-			NewExporter(m.cfg.Exporter, promPlan, NewEngine(m.cfg, m.db)),
+			NewExporter(m.cfg.Exporter, promPlan, newEngineWithDBProvider(m.cfg, m.db, m.dbProvider)),
 		)
 
 		m.wg.Add(1)
@@ -391,13 +397,13 @@ func (m *Monitor) startup() error {
 	// config.plans.change, then it will do this; if it's not enabled,
 	// we'll do it as the last startup step.
 	status.Monitor(m.monitorId, status.MONITOR, "starting level collector")
-	m.lco = NewLevelCollector(LevelCollectorArgs{
+	m.lco = newLevelCollectorWithDBProvider(LevelCollectorArgs{
 		Config:           m.cfg,
 		DB:               m.db,
 		PlanLoader:       m.planLoader,
 		Sinks:            m.sinks,
 		TransformMetrics: m.transformMetric,
-	})
+	}, m.dbProvider)
 
 	m.wg.Add(1)
 	go func() {
@@ -456,6 +462,46 @@ func (m *Monitor) startup() error {
 	return nil
 }
 
+func (m *Monitor) makeDB() (blip.DbProvider, *sql.DB, string, error) {
+	providerFactory, ok := m.dbMaker.(blip.DbProviderFactory)
+	if !ok {
+		db, dsn, err := m.dbMaker.Make(m.cfg)
+		return nil, db, dsn, err
+	}
+
+	provider, dsn, err := providerFactory.MakeProvider(m.cfg)
+	if err != nil {
+		if provider != nil {
+			provider.Close()
+		}
+		return nil, nil, "", err
+	}
+	if provider == nil {
+		return nil, nil, "", fmt.Errorf("database provider factory returned a nil provider")
+	}
+	db := provider.Primary()
+	if db == nil {
+		provider.Close()
+		return nil, nil, "", fmt.Errorf("database provider returned a nil primary connection")
+	}
+	return provider, db, dsn, nil
+}
+
+// closeDB releases the current monitor-owned database resources. The caller
+// must hold runMux.
+func (m *Monitor) closeDB() {
+	if m.dbProvider != nil {
+		m.dbProvider.Close()
+		m.dbProvider = nil
+		m.db = nil
+		return
+	}
+	if m.db != nil {
+		m.db.Close()
+		m.db = nil
+	}
+}
+
 // stop stops the monitor subsystems started in startup. It does not stop the
 // monitor; Stop does that. Stopping only the monitor subsystems causes runLoop
 // to restart them.
@@ -487,6 +533,11 @@ func (m *Monitor) stop(lock bool, caller string) {
 	// Wait for monitor subsystem goroutines to return
 	status.Monitor(m.monitorId, status.MONITOR, "stopping goroutines")
 	m.wg.Wait()
+
+	// A subsystem failure restarts the whole monitor, including its database
+	// provider. Close the current provider only after every subsystem has
+	// stopped using its connections.
+	m.closeDB()
 }
 
 func (m *Monitor) setErr(err error, isPanic bool) {

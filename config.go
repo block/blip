@@ -486,7 +486,7 @@ func (c ConfigMonitor) Validate() error {
 		if c.Heartbeat.set() {
 			return fmt.Errorf("config.monitor.heartbeat is only supported for database-type %q", DatabaseTypeMySQL)
 		}
-		if c.Plans.Change.Enabled() {
+		if c.Plans.Change.set() {
 			return fmt.Errorf("config.monitor.plans.change is only supported for database-type %q", DatabaseTypeMySQL)
 		}
 		if c.Plans.Table != "" {
@@ -985,6 +985,9 @@ func DefaultConfigPlans() ConfigPlans {
 }
 
 func (c ConfigPlans) Validate() error {
+	if c.Table != "" && c.Monitor != nil && c.Monitor.EffectiveDatabaseType() != DatabaseTypeMySQL {
+		return fmt.Errorf("config.plans.monitor.database-type: config.plans.table is only supported for database-type %q", DatabaseTypeMySQL)
+	}
 	return nil
 }
 
@@ -1102,6 +1105,13 @@ func (c ConfigPlanChange) Enabled() bool {
 		c.Standby.Plan != "" ||
 		c.ReadOnly.Plan != "" ||
 		c.Active.Plan != ""
+}
+
+func (c ConfigPlanChange) set() bool {
+	return c.Offline.After != "" || c.Offline.Plan != "" ||
+		c.Standby.After != "" || c.Standby.Plan != "" ||
+		c.ReadOnly.After != "" || c.ReadOnly.Plan != "" ||
+		c.Active.After != "" || c.Active.Plan != ""
 }
 
 // --------------------------------------------------------------------------

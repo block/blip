@@ -219,15 +219,7 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 				break
 			}
 			blip.Debug("stopChan closed at %s s=%d interval=%d", startTime, s, interval)
-			c.changeMux.Lock()
-			defer c.changeMux.Unlock()
-			c.stopped = true // make ChangePlan do nothing
-			select {
-			case <-c.changePlanDoneChan:
-				c.changePlanCancelFunc() // stop --> changePlan goroutine
-				<-c.changePlanDoneChan   // wait for changePlan goroutine
-			default:
-			}
+			c.stopChangePlan()
 			c.engine.Stop() // stop all collectors and run their cleanup func
 			return nil
 		default: // no
@@ -261,6 +253,23 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 		c.stateMux.Unlock() // -- UNLOCK --
 	}
 	return nil
+}
+
+// stopChangePlan prevents new plan changes, cancels the current plan change,
+// and waits for its worker to stop using the engine and database provider.
+func (c *lco) stopChangePlan() {
+	c.changeMux.Lock()
+	defer c.changeMux.Unlock()
+
+	c.stopped = true
+	if c.changePlanCancelFunc == nil {
+		return
+	}
+
+	c.changePlanCancelFunc()
+	<-c.changePlanDoneChan
+	c.changePlanCancelFunc = nil
+	c.changePlanDoneChan = nil
 }
 
 func (c *lco) collect(interval uint, levelName string, startTime time.Time) {
@@ -393,7 +402,10 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 		errMsg := fmt.Sprintf("%s: error loading new plan %s: %s (retrying)", change, newPlanName, err)
 		status.Monitor(c.monitorId, status.LEVEL_CHANGE_PLAN, "%s", errMsg)
 		c.event.Sendf(event.CHANGE_PLAN_ERROR, "%s", errMsg)
-		time.Sleep(2 * time.Second)
+		if !waitForChangePlanRetry(ctx, 2*time.Second) {
+			blip.Debug("changePlan canceled while loading plan")
+			return
+		}
 	}
 
 	change = fmt.Sprintf("state:%s plan:%s -> state:%s plan:%s", oldState, oldPlanName, newState, newPlan.Name)
@@ -468,11 +480,26 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 			return // changePlan goroutine has been cancelled
 		}
 		status.Monitor(c.monitorId, status.LEVEL_CHANGE_PLAN, "%s: error preparing new plan %s: %s (retrying)", change, newPlan.Name, err)
-		time.Sleep(retry.NextBackOff())
+		if !waitForChangePlanRetry(ctx, retry.NextBackOff()) {
+			blip.Debug("changePlan canceled while waiting to retry plan preparation")
+			return
+		}
 	}
 
 	status.RemoveComponent(c.monitorId, status.LEVEL_CHANGE_PLAN)
 	c.event.Sendf(event.CHANGE_PLAN_SUCCESS, "%s", change)
+}
+
+func waitForChangePlanRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // Pause pauses metrics collection until ChangePlan is called. Run still runs,

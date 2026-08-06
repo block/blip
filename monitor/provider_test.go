@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cashapp/blip"
 	"github.com/cashapp/blip/metrics"
+	"github.com/cashapp/blip/plan"
 	"github.com/cashapp/blip/test"
 	"github.com/cashapp/blip/test/mock"
 )
@@ -131,6 +133,136 @@ func TestMonitorCloseDBClosesProviderOnce(t *testing.T) {
 	}
 }
 
+func TestMonitorStopWaitsForPlanPreparationBeforeClosingProvider(t *testing.T) {
+	TickerDuration(10*time.Millisecond, time.Second)
+	defer TickerDuration(time.Second, time.Second)
+
+	const (
+		domain     = "test.provider-stop"
+		monitorID  = "provider-stop"
+		planName   = "provider-stop-plan"
+		levelName  = "provider-stop-level"
+		stopCaller = "provider-stop-test"
+	)
+
+	prepareStarted := make(chan struct{})
+	prepareStopped := make(chan struct{})
+	releasePrepare := make(chan struct{})
+	collector := mock.MetricsCollector{
+		DomainFunc: func() string { return domain },
+		PrepareFunc: func(ctx context.Context, _ blip.Plan) (func(), error) {
+			close(prepareStarted)
+			select {
+			case <-ctx.Done():
+				close(prepareStopped)
+				return nil, ctx.Err()
+			case <-releasePrepare:
+				close(prepareStopped)
+				return nil, nil
+			}
+		},
+	}
+	if err := metrics.Register(domain, mock.MetricFactory{
+		MakeFunc: func(string, blip.CollectorFactoryArgs) (blip.Collector, error) {
+			return collector, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(domain) })
+
+	loader := plan.NewLoader(func(blip.ConfigPlans) ([]blip.Plan, error) {
+		return []blip.Plan{{
+			Name: planName,
+			Levels: map[string]blip.Level{
+				levelName: {
+					Name: levelName,
+					Freq: "1s",
+					Collect: map[string]blip.Domain{
+						domain: {},
+					},
+				},
+			},
+		}}, nil
+	})
+	if err := loader.LoadShared(blip.ConfigPlans{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	config := blip.ConfigMonitor{MonitorId: monitorID}
+	if err := loader.LoadMonitor(config, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, primary, err := test.Connection(test.DefaultMySQLVersion)
+	if err != nil {
+		if test.Build {
+			t.Skip("MySQL test fixture not running")
+		}
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	provider := &testDBProvider{
+		primary: primary,
+		closeFunc: func() {
+			select {
+			case <-prepareStopped:
+			default:
+				close(releasePrepare)
+				t.Error("database provider closed before plan preparation stopped")
+			}
+		},
+	}
+	lco := newLevelCollectorWithDBProvider(LevelCollectorArgs{
+		Config:     config,
+		DB:         primary,
+		PlanLoader: loader,
+	}, provider)
+	monitor := NewMonitor(MonitorArgs{Config: config})
+	monitor.runChan = make(chan struct{})
+	monitor.db = primary
+	monitor.dbProvider = provider
+
+	lcoDone := make(chan struct{})
+	monitor.wg.Add(1)
+	go func() {
+		defer monitor.wg.Done()
+		_ = lco.Run(monitor.runChan, lcoDone)
+	}()
+	if err := lco.ChangePlan(blip.STATE_ACTIVE, planName); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-prepareStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for plan preparation to start")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		monitor.stop(false, stopCaller)
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		select {
+		case <-prepareStopped:
+		default:
+			close(releasePrepare)
+		}
+		t.Fatal("timeout waiting for monitor to stop")
+	}
+
+	select {
+	case <-prepareStopped:
+	default:
+		t.Fatal("plan preparation was still running after monitor stop")
+	}
+	if provider.closeCalls != 1 {
+		t.Fatalf("provider Close calls = %d, expected 1", provider.closeCalls)
+	}
+}
+
 func TestNewEngineWithDBProviderRetainsProvider(t *testing.T) {
 	provider := &testDBProvider{primary: &sql.DB{}}
 	engine := newEngineWithDBProvider(blip.ConfigMonitor{MonitorId: "engine"}, provider.primary, provider)
@@ -196,6 +328,7 @@ func TestEnginePassesProviderToCollectorFactory(t *testing.T) {
 type testDBProvider struct {
 	primary    *sql.DB
 	closeCalls int
+	closeFunc  func()
 }
 
 func (p *testDBProvider) Primary() *sql.DB {
@@ -203,6 +336,9 @@ func (p *testDBProvider) Primary() *sql.DB {
 }
 
 func (p *testDBProvider) Close() error {
+	if p.closeFunc != nil {
+		p.closeFunc()
+	}
 	p.closeCalls++
 	return nil
 }

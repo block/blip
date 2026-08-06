@@ -145,6 +145,18 @@ func TestConfigMonitorDatabaseTypeValidation(t *testing.T) {
 			wantError: "plans.change is only supported",
 		},
 		{
+			name: "plan change delay on PostgreSQL monitor",
+			monitor: blip.ConfigMonitor{
+				DatabaseType: blip.DatabaseTypePostgres,
+				Plans: blip.ConfigPlans{
+					Change: blip.ConfigPlanChange{
+						Active: blip.ConfigStatePlan{After: "10s"},
+					},
+				},
+			},
+			wantError: "plans.change is only supported",
+		},
+		{
 			name: "plan table on PostgreSQL monitor",
 			monitor: blip.ConfigMonitor{
 				DatabaseType: blip.DatabaseTypePostgres,
@@ -157,6 +169,55 @@ func TestConfigMonitorDatabaseTypeValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.monitor.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("got error %v, expected it to contain %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigPlansRejectsPostgresTableMonitor(t *testing.T) {
+	tests := []struct {
+		name      string
+		plans     blip.ConfigPlans
+		wantError string
+	}{
+		{
+			name: "implicit MySQL",
+			plans: blip.ConfigPlans{
+				Table:   "blip.plans",
+				Monitor: &blip.ConfigMonitor{},
+			},
+		},
+		{
+			name: "PostgreSQL",
+			plans: blip.ConfigPlans{
+				Table: "blip.plans",
+				Monitor: &blip.ConfigMonitor{
+					DatabaseType: blip.DatabaseTypePostgres,
+				},
+			},
+			wantError: "config.plans.table is only supported",
+		},
+		{
+			name: "PostgreSQL without table",
+			plans: blip.ConfigPlans{
+				Monitor: &blip.ConfigMonitor{
+					DatabaseType: blip.DatabaseTypePostgres,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.plans.Validate()
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 				t.Fatalf("got error %v, expected it to contain %q", err, tt.wantError)
 			}

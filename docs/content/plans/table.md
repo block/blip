@@ -5,9 +5,10 @@ title: "Table"
 A plan table contains one plan per row:
 
 {{< hint type=note >}}
-Monitor-level plan tables are MySQL-specific. PostgreSQL monitors can use plan
-files or compatible shared plans, but reject `plans.table` in their monitor
-configuration.
+Plan-table storage is MySQL-specific. The connection configured by a top-level
+`plans.monitor` must be MySQL, and PostgreSQL monitors reject `plans.table` in
+their monitor configuration. PostgreSQL monitors can use plan files or
+compatible shared plans.
 {{< /hint >}}
 
 ```sql

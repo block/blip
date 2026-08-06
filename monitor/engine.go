@@ -440,16 +440,16 @@ func (e *Engine) stopCollectors() {
 	/* -- CALLER MUST LOCK Engine -- */
 	for _, cl := range e.collectors {
 		cl.Lock()
-		if !cl.running {
-			cl.Unlock()
+		if cl.running {
+			blip.Debug("%s: %s stopping", e.monitorId, cl.c.Domain())
+			cl.cancel()
+		} else {
 			blip.Debug("%s: %s not running", e.monitorId, cl.c.Domain())
-			continue
 		}
-		blip.Debug("%s: %s stopping", e.monitorId, cl.c.Domain())
-		cl.cancel()
 		if cl.cleanup != nil {
 			blip.Debug("%s: %s cleanup", e.monitorId, cl.c.Domain())
 			cl.cleanup()
+			cl.cleanup = nil
 		}
 		cl.Unlock()
 	}

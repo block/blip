@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/heartbeat"
 	"github.com/cashapp/blip/metrics"
 	"github.com/cashapp/blip/plan"
 	"github.com/cashapp/blip/test"
@@ -257,6 +259,132 @@ func TestMonitorStopWaitsForPlanPreparationBeforeClosingProvider(t *testing.T) {
 	case <-prepareStopped:
 	default:
 		t.Fatal("plan preparation was still running after monitor stop")
+	}
+	if provider.closeCalls != 1 {
+		t.Fatalf("provider Close calls = %d, expected 1", provider.closeCalls)
+	}
+}
+
+func TestMonitorStartupErrorStopsPartialSubsystemsBeforeClosingProvider(t *testing.T) {
+	const (
+		monitorID      = "partial-startup"
+		exporterPlan   = "invalid-exporter"
+		heartbeatDB    = "blip_monitor_provider_test"
+		heartbeatTable = heartbeatDB + ".heartbeat"
+	)
+
+	_, primary, err := test.Connection(test.DefaultMySQLVersion)
+	if err != nil {
+		if test.Build {
+			t.Skip("MySQL test fixture not running")
+		}
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	if _, err := primary.Exec("CREATE DATABASE IF NOT EXISTS " + heartbeatDB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = primary.Exec("DROP DATABASE IF EXISTS " + heartbeatDB) })
+	heartbeatDDL := strings.Replace(heartbeat.BLIP_TABLE_DDL, "heartbeat", heartbeatTable, 1)
+	if _, err := primary.Exec(heartbeatDDL); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := plan.NewLoader(func(blip.ConfigPlans) ([]blip.Plan, error) {
+		return []blip.Plan{{
+			Name: exporterPlan,
+			Levels: map[string]blip.Level{
+				"fast": {Name: "fast", Freq: "1s"},
+				"slow": {Name: "slow", Freq: "5s"},
+			},
+		}}, nil
+	})
+	if err := loader.LoadShared(blip.ConfigPlans{}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	config := blip.ConfigMonitor{
+		MonitorId: monitorID,
+		Heartbeat: blip.ConfigHeartbeat{
+			Freq:  "10ms",
+			Table: heartbeatTable,
+		},
+		Exporter: blip.ConfigExporter{
+			Mode: blip.EXPORTER_MODE_DUAL,
+			Plan: exporterPlan,
+		},
+	}
+	provider := &testDBProvider{primary: primary}
+	monitor := NewMonitor(MonitorArgs{
+		Config:     config,
+		DbMaker:    &testDBProviderFactory{provider: provider, dsn: "redacted"},
+		PlanLoader: loader,
+	})
+	monitor.runLoopChan = make(chan struct{})
+	monitor.runChan = make(chan struct{})
+	provider.closeFunc = func() {
+		select {
+		case <-monitor.runChan:
+		default:
+			t.Error("database provider closed before partial subsystems were stopped")
+		}
+	}
+
+	err = monitor.startup()
+	if err == nil || !strings.Contains(err.Error(), "expected 1") {
+		t.Fatalf("startup error = %v, expected invalid exporter level count", err)
+	}
+	if provider.closeCalls != 1 {
+		t.Fatalf("provider Close calls = %d, expected 1", provider.closeCalls)
+	}
+	if monitor.db != nil || monitor.dbProvider != nil {
+		t.Fatalf("monitor retained database resources: db=%p provider=%T", monitor.db, monitor.dbProvider)
+	}
+}
+
+func TestMonitorStopRunIgnoresObsoleteGeneration(t *testing.T) {
+	oldRun := make(chan struct{})
+	currentRun := make(chan struct{})
+	monitor := NewMonitor(MonitorArgs{Config: blip.ConfigMonitor{MonitorId: "run-generation"}})
+	monitor.runChan = currentRun
+
+	monitor.stopRun(oldRun, "obsolete")
+
+	select {
+	case <-currentRun:
+		t.Fatal("obsolete subsystem stopped the current run")
+	default:
+	}
+}
+
+func TestMonitorStopCleansExporterBeforeClosingProvider(t *testing.T) {
+	cleaned := false
+	provider := &testDBProvider{
+		primary: &sql.DB{},
+		closeFunc: func() {
+			if !cleaned {
+				t.Error("database provider closed before exporter cleanup")
+			}
+		},
+	}
+	collector := mock.MetricsCollector{DomainFunc: func() string { return "test.exporter-cleanup" }}
+	engine := newEngineWithDBProvider(blip.ConfigMonitor{MonitorId: "exporter-cleanup"}, provider.primary, provider)
+	engine.collectors[collector.Domain()] = &clutch{
+		c:       collector,
+		cleanup: func() { cleaned = true },
+		domain:  collector.Domain(),
+		Mutex:   &sync.Mutex{},
+	}
+	monitor := NewMonitor(MonitorArgs{Config: blip.ConfigMonitor{MonitorId: "exporter-cleanup"}})
+	monitor.runChan = make(chan struct{})
+	monitor.db = provider.primary
+	monitor.dbProvider = provider
+	monitor.exporter = NewExporter(blip.ConfigExporter{}, blip.Plan{}, engine)
+
+	monitor.stop(false, "exporter-cleanup-test")
+
+	if !cleaned {
+		t.Fatal("exporter collector cleanup was not called")
 	}
 	if provider.closeCalls != 1 {
 		t.Fatalf("provider Close calls = %d, expected 1", provider.closeCalls)

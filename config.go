@@ -492,6 +492,9 @@ func (c ConfigMonitor) Validate() error {
 		if c.Plans.Table != "" {
 			return fmt.Errorf("config.monitor.plans.table is only supported for database-type %q", DatabaseTypeMySQL)
 		}
+		if c.Exporter.Mode != "" && c.Exporter.Plan == "" {
+			return fmt.Errorf("config.monitor.exporter.plan is required for database-type %q", DatabaseTypePostgres)
+		}
 		return c.Postgres.Validate()
 	default:
 		return fmt.Errorf("config.monitor.database-type: invalid database type %q", c.DatabaseType)
@@ -555,7 +558,7 @@ func (c *ConfigMonitor) ApplyDefaults(b Config) {
 		c.Sinks = ConfigSinks{}
 	}
 	c.AWS.ApplyDefaults(b)
-	c.Exporter.ApplyDefaults(b)
+	c.Exporter.applyDefaults(b, databaseType == DatabaseTypeMySQL)
 	c.HA.ApplyDefaults(b)
 	// Heartbeat writes and plan state changes use MySQL-specific SQL. Do not
 	// inherit their global defaults into PostgreSQL monitors; explicit monitor
@@ -765,6 +768,10 @@ func (c ConfigExporter) Validate() error {
 }
 
 func (c *ConfigExporter) ApplyDefaults(b Config) {
+	c.applyDefaults(b, true)
+}
+
+func (c *ConfigExporter) applyDefaults(b Config, useDefaultPlan bool) {
 	if c.Mode == "" && b.Exporter.Mode != "" {
 		c.Mode = b.Exporter.Mode
 	}
@@ -775,7 +782,7 @@ func (c *ConfigExporter) ApplyDefaults(b Config) {
 	if c.Plan == "" && b.Exporter.Plan != "" {
 		c.Plan = b.Exporter.Plan
 	}
-	if c.Plan == "" {
+	if c.Plan == "" && useDefaultPlan {
 		c.Plan = DEFAULT_EXPORTER_PLAN
 	}
 	if len(b.Exporter.Flags) > 0 {

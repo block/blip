@@ -176,6 +176,46 @@ func TestConfigMonitorDatabaseTypeValidation(t *testing.T) {
 	}
 }
 
+func TestConfigMonitorPostgresExporterRequiresPlan(t *testing.T) {
+	defaults := blip.DefaultConfig()
+	defaults.Exporter.Mode = blip.EXPORTER_MODE_DUAL
+	monitor := blip.ConfigMonitor{DatabaseType: blip.DatabaseTypePostgres}
+
+	monitor.ApplyDefaults(defaults)
+	if monitor.Exporter.Plan != "" {
+		t.Fatalf("PostgreSQL monitor inherited MySQL exporter plan %q", monitor.Exporter.Plan)
+	}
+	if err := monitor.Validate(); err == nil || !strings.Contains(err.Error(), "exporter.plan is required") {
+		t.Fatalf("validation error = %v, expected required exporter plan", err)
+	}
+}
+
+func TestConfigMonitorPostgresExporterUsesConfiguredPlan(t *testing.T) {
+	defaults := blip.DefaultConfig()
+	defaults.Exporter.Mode = blip.EXPORTER_MODE_DUAL
+	defaults.Exporter.Plan = "postgres-exporter"
+	monitor := blip.ConfigMonitor{DatabaseType: blip.DatabaseTypePostgres}
+
+	monitor.ApplyDefaults(defaults)
+	if monitor.Exporter.Plan != defaults.Exporter.Plan {
+		t.Fatalf("exporter plan = %q, expected %q", monitor.Exporter.Plan, defaults.Exporter.Plan)
+	}
+	if err := monitor.Validate(); err != nil {
+		t.Fatalf("PostgreSQL exporter config is invalid: %v", err)
+	}
+}
+
+func TestConfigMonitorMySQLExporterRetainsDefaultPlan(t *testing.T) {
+	defaults := blip.DefaultConfig()
+	defaults.Exporter.Mode = blip.EXPORTER_MODE_DUAL
+	monitor := blip.ConfigMonitor{}
+
+	monitor.ApplyDefaults(defaults)
+	if monitor.Exporter.Plan != blip.DEFAULT_EXPORTER_PLAN {
+		t.Fatalf("exporter plan = %q, expected %q", monitor.Exporter.Plan, blip.DEFAULT_EXPORTER_PLAN)
+	}
+}
+
 func TestConfigPlansRejectsPostgresTableMonitor(t *testing.T) {
 	tests := []struct {
 		name      string

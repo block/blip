@@ -47,7 +47,11 @@ func (f Factory) Dynamic(cfg blip.ConfigMonitor) (Func, bool, error) {
 		if err != nil {
 			return nil, true, err
 		}
-		token := blipaws.NewAuthToken(cfg.Username, cfg.Hostname, awscfg)
+		defaultPort := "3306"
+		if cfg.EffectiveDatabaseType() == blip.DatabaseTypePostgres {
+			defaultPort = "5432"
+		}
+		token := blipaws.NewAuthTokenWithDefaultPort(cfg.Username, cfg.Hostname, defaultPort, awscfg)
 		return func(ctx context.Context) (blip.DbCredentials, error) {
 			password, err := token.Password(ctx)
 			if err != nil {

@@ -4,6 +4,12 @@ title: "Table"
 
 A plan table contains one plan per row:
 
+{{< hint type=note >}}
+Monitor-level plan tables are MySQL-specific. PostgreSQL monitors can use plan
+files or compatible shared plans, but reject `plans.table` in their monitor
+configuration.
+{{< /hint >}}
+
 ```sql
 CREATE TABLE IF NOT EXISTS plans (
   name        VARCHAR(100) NOT NULL PRIMARY KEY,

@@ -483,6 +483,15 @@ func (c ConfigMonitor) Validate() error {
 		if c.MyCnf != "" {
 			return fmt.Errorf("config.monitor.mycnf is only supported for database-type %q", DatabaseTypeMySQL)
 		}
+		if c.Heartbeat.set() {
+			return fmt.Errorf("config.monitor.heartbeat is only supported for database-type %q", DatabaseTypeMySQL)
+		}
+		if c.Plans.Change.Enabled() {
+			return fmt.Errorf("config.monitor.plans.change is only supported for database-type %q", DatabaseTypeMySQL)
+		}
+		if c.Plans.Table != "" {
+			return fmt.Errorf("config.monitor.plans.table is only supported for database-type %q", DatabaseTypeMySQL)
+		}
 		return c.Postgres.Validate()
 	default:
 		return fmt.Errorf("config.monitor.database-type: invalid database type %q", c.DatabaseType)
@@ -503,7 +512,8 @@ func (c ConfigMonitor) redacted(seen map[*ConfigMonitor]*ConfigMonitor) ConfigMo
 }
 
 func (c *ConfigMonitor) ApplyDefaults(b Config) {
-	if c.EffectiveDatabaseType() == DatabaseTypeMySQL {
+	databaseType := c.EffectiveDatabaseType()
+	if databaseType == DatabaseTypeMySQL {
 		if c.Socket == "" {
 			c.Socket = b.MySQL.Socket
 		}
@@ -547,9 +557,14 @@ func (c *ConfigMonitor) ApplyDefaults(b Config) {
 	c.AWS.ApplyDefaults(b)
 	c.Exporter.ApplyDefaults(b)
 	c.HA.ApplyDefaults(b)
-	c.Heartbeat.ApplyDefaults(b)
-	c.Plans.ApplyDefaults(b)
-	if c.EffectiveDatabaseType() == DatabaseTypePostgres {
+	// Heartbeat writes and plan state changes use MySQL-specific SQL. Do not
+	// inherit their global defaults into PostgreSQL monitors; explicit monitor
+	// values remain intact so Validate can report the unsupported configuration.
+	if databaseType == DatabaseTypeMySQL {
+		c.Heartbeat.ApplyDefaults(b)
+	}
+	c.Plans.applyDefaults(b, databaseType == DatabaseTypeMySQL)
+	if databaseType == DatabaseTypePostgres {
 		postgresDefaults := DefaultConfigPostgres()
 		postgresDefaults.ConnectTimeout = c.TimeoutConnect
 		c.Postgres.ApplyDefaults(postgresDefaults)
@@ -798,6 +813,10 @@ type ConfigHeartbeat struct {
 	Table    string `yaml:"table,omitempty"`
 }
 
+func (c ConfigHeartbeat) set() bool {
+	return c.Freq != "" || c.SourceId != "" || c.Role != "" || c.Table != ""
+}
+
 const (
 	DEFAULT_HEARTBEAT_TABLE = "blip.heartbeat"
 )
@@ -986,11 +1005,17 @@ func (c ConfigPlans) redacted(seen map[*ConfigMonitor]*ConfigMonitor) ConfigPlan
 }
 
 func (c *ConfigPlans) ApplyDefaults(b Config) {
+	c.applyDefaults(b, true)
+}
+
+func (c *ConfigPlans) applyDefaults(b Config, applyChange bool) {
 	if len(c.Files) == 0 && len(b.Plans.Files) > 0 {
 		c.Files = make([]string, len(b.Plans.Files))
 		copy(c.Files, b.Plans.Files)
 	}
-	c.Change.ApplyDefaults(b)
+	if applyChange {
+		c.Change.ApplyDefaults(b)
+	}
 }
 
 func (c *ConfigPlans) InterpolateEnvVars() {

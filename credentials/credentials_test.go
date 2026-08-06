@@ -4,14 +4,25 @@ package credentials_test
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
+
 	"github.com/cashapp/blip"
 	"github.com/cashapp/blip/credentials"
 )
+
+type staticAWSConfigFactory struct {
+	config awsv2.Config
+}
+
+func (f staticAWSConfigFactory) Make(blip.AWS, string) (awsv2.Config, error) {
+	return f.config, nil
+}
 
 func TestDynamicPasswordFileReloads(t *testing.T) {
 	passwordFile := filepath.Join(t.TempDir(), "password")
@@ -88,6 +99,77 @@ func TestDynamicPreservesSourcePrecedence(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 				t.Fatalf("got error %v, expected it to contain %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestDynamicIAMUsesDatabaseDefaultPort(t *testing.T) {
+	iamAuth := true
+	factory := credentials.NewFactory(staticAWSConfigFactory{config: awsv2.Config{
+		Region: "us-west-2",
+		Credentials: awsv2.CredentialsProviderFunc(func(context.Context) (awsv2.Credentials, error) {
+			return awsv2.Credentials{
+				AccessKeyID:     "test-access-key-do-not-use",
+				SecretAccessKey: "test-secret-key-do-not-use",
+				SessionToken:    "test-session-token-do-not-use",
+			}, nil
+		}),
+	}}, nil)
+
+	tests := []struct {
+		name         string
+		databaseType blip.DatabaseType
+		hostname     string
+		wantHost     string
+	}{
+		{
+			name:     "implicit MySQL",
+			hostname: "mysql.example",
+			wantHost: "mysql.example:3306",
+		},
+		{
+			name:         "PostgreSQL",
+			databaseType: blip.DatabaseTypePostgres,
+			hostname:     "postgres.example",
+			wantHost:     "postgres.example:5432",
+		},
+		{
+			name:         "PostgreSQL custom port",
+			databaseType: blip.DatabaseTypePostgres,
+			hostname:     "postgres.example:6432",
+			wantHost:     "postgres.example:6432",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			credentialFunc, selected, err := factory.Dynamic(blip.ConfigMonitor{
+				DatabaseType: tt.databaseType,
+				Hostname:     tt.hostname,
+				Username:     "metrics",
+				AWS: blip.ConfigAWS{
+					IAMAuth: &iamAuth,
+					Region:  "us-west-2",
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !selected {
+				t.Fatal("IAM credentials were not selected")
+			}
+
+			got, err := credentialFunc(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tokenURL, err := url.Parse("https://" + got.Password)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tokenURL.Host != tt.wantHost {
+				t.Fatalf("IAM token host = %q, expected %q", tokenURL.Host, tt.wantHost)
 			}
 		})
 	}

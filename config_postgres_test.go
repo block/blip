@@ -124,6 +124,34 @@ func TestConfigMonitorDatabaseTypeValidation(t *testing.T) {
 			},
 			wantError: "socket is only supported",
 		},
+		{
+			name: "heartbeat on PostgreSQL monitor",
+			monitor: blip.ConfigMonitor{
+				DatabaseType: blip.DatabaseTypePostgres,
+				Heartbeat:    blip.ConfigHeartbeat{Freq: "1s"},
+			},
+			wantError: "heartbeat is only supported",
+		},
+		{
+			name: "plan changing on PostgreSQL monitor",
+			monitor: blip.ConfigMonitor{
+				DatabaseType: blip.DatabaseTypePostgres,
+				Plans: blip.ConfigPlans{
+					Change: blip.ConfigPlanChange{
+						Active: blip.ConfigStatePlan{Plan: "active"},
+					},
+				},
+			},
+			wantError: "plans.change is only supported",
+		},
+		{
+			name: "plan table on PostgreSQL monitor",
+			monitor: blip.ConfigMonitor{
+				DatabaseType: blip.DatabaseTypePostgres,
+				Plans:        blip.ConfigPlans{Table: "blip.plans"},
+			},
+			wantError: "plans.table is only supported",
+		},
 	}
 
 	for _, tt := range tests {
@@ -133,6 +161,44 @@ func TestConfigMonitorDatabaseTypeValidation(t *testing.T) {
 				t.Fatalf("got error %v, expected it to contain %q", err, tt.wantError)
 			}
 		})
+	}
+}
+
+func TestConfigMonitorDatabaseSpecificDefaults(t *testing.T) {
+	defaults := blip.DefaultConfig()
+	defaults.Heartbeat = blip.ConfigHeartbeat{
+		Freq:  "1s",
+		Table: "blip.heartbeat",
+	}
+	defaults.Plans = blip.ConfigPlans{
+		Files: []string{"shared.yaml"},
+		Change: blip.ConfigPlanChange{
+			Active: blip.ConfigStatePlan{Plan: "active"},
+		},
+	}
+
+	postgres := blip.ConfigMonitor{DatabaseType: blip.DatabaseTypePostgres}
+	postgres.ApplyDefaults(defaults)
+	if postgres.Heartbeat != (blip.ConfigHeartbeat{}) {
+		t.Fatalf("PostgreSQL monitor inherited heartbeat defaults: %+v", postgres.Heartbeat)
+	}
+	if postgres.Plans.Change.Enabled() {
+		t.Fatalf("PostgreSQL monitor inherited plan-changing defaults: %+v", postgres.Plans.Change)
+	}
+	if got := postgres.Plans.Files; len(got) != 1 || got[0] != "shared.yaml" {
+		t.Fatalf("PostgreSQL monitor plan files = %#v, expected shared plan defaults", got)
+	}
+	if err := postgres.Validate(); err != nil {
+		t.Fatalf("PostgreSQL monitor with shared defaults is invalid: %v", err)
+	}
+
+	mysql := blip.ConfigMonitor{}
+	mysql.ApplyDefaults(defaults)
+	if mysql.Heartbeat == (blip.ConfigHeartbeat{}) {
+		t.Fatal("MySQL monitor did not inherit heartbeat defaults")
+	}
+	if !mysql.Plans.Change.Enabled() {
+		t.Fatal("MySQL monitor did not inherit plan-changing defaults")
 	}
 }
 

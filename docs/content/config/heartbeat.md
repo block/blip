@@ -6,6 +6,11 @@ Although MySQL has built-in replication heartbeats and lag metrics, they are not
 For example, `Seconds_Behind_Source` from `SHOW REPLICA STATUS` (or `Seconds_Behind_Master` from `SHOW SLAVE STATUS` before MySQL 8.022) is always on but infamously inaccurate: it reports zero when a network issue blocks replication.
 Consequently, external replication heartbeats are an industry norm because they are easy and accurate&mdash;and they work the same across all versions and distributions of MySQL, including the the cloud.
 
+{{< hint type=note >}}
+Blip heartbeat is MySQL-specific. PostgreSQL monitors do not inherit global
+heartbeat defaults and reject monitor-level heartbeat configuration.
+{{< /hint >}}
+
 ## Quick Start
 
 Presuming one source MySQL instance and one read-only replica, the minimal configuration is:

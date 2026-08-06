@@ -391,6 +391,67 @@ func TestMonitorStopCleansExporterBeforeClosingProvider(t *testing.T) {
 	}
 }
 
+func TestEngineStopWaitsForBackgroundCollector(t *testing.T) {
+	const (
+		domain = "test.background-stop"
+		level  = "fast"
+	)
+	backgroundStarted := make(chan struct{})
+	backgroundStopped := make(chan struct{})
+	var collectCtx context.Context
+	collector := mock.MetricsCollector{
+		DomainFunc: func() string { return domain },
+		CollectFunc: func(ctx context.Context, _ string) ([]blip.MetricValue, error) {
+			if ctx != nil {
+				collectCtx = ctx
+				return nil, blip.ErrMore
+			}
+			close(backgroundStarted)
+			<-collectCtx.Done()
+			close(backgroundStopped)
+			return nil, nil
+		},
+	}
+	engine := newEngineWithDBProvider(blip.ConfigMonitor{MonitorId: "background-stop"}, &sql.DB{}, nil)
+	cl := &clutch{
+		c: collector,
+		cleanup: func() {
+			select {
+			case <-backgroundStopped:
+			default:
+				t.Error("collector cleanup ran before background collection stopped")
+			}
+		},
+		domain:         domain,
+		cmr:            time.Second,
+		collectionChan: engine.collectionChan,
+		Mutex:          &sync.Mutex{},
+	}
+	engine.plan = blip.Plan{Name: "background", Levels: map[string]blip.Level{level: {Name: level, Freq: "1s"}}}
+	engine.collectors[domain] = cl
+	engine.collectAt[level] = []*clutch{cl}
+	engine.checkAt[level] = nil
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := engine.Collect(ctx, 1, level, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backgroundStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for background collection to start")
+	}
+
+	engine.Stop()
+
+	select {
+	case <-backgroundStopped:
+	default:
+		t.Fatal("background collector was still running after Engine.Stop")
+	}
+}
+
 func TestNewEngineWithDBProviderRetainsProvider(t *testing.T) {
 	provider := &testDBProvider{primary: &sql.DB{}}
 	engine := newEngineWithDBProvider(blip.ConfigMonitor{MonitorId: "engine"}, provider.primary, provider)

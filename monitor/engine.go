@@ -58,6 +58,7 @@ type Engine struct {
 	collectAt      map[string][]*clutch // keyed on level, sorted ascending by CMR
 	checkAt        map[string][]*clutch // keyed on level
 	collectionChan chan collection
+	collectorWG    sync.WaitGroup
 }
 
 func NewEngine(cfg blip.ConfigMonitor, db *sql.DB) *Engine {
@@ -302,7 +303,11 @@ func (e *Engine) Collect(emrCtx context.Context, interval uint, levelName string
 	for _, cl := range domains {
 		select {
 		case <-sem:
-			go cl.collect(*m, sem)
+			e.collectorWG.Add(1)
+			go func(cl *clutch, metrics blip.Metrics) {
+				defer e.collectorWG.Done()
+				cl.collect(metrics, sem)
+			}(cl, *m)
 			running[cl.c.Domain()] = true
 		case <-emrCtx.Done():
 			blip.Debug("EMR timeout starting collectors")
@@ -418,13 +423,9 @@ SWEEP:
 	return metrics, fmt.Errorf("%s: failed: zero metrics collected, %d errors", coId, errCount)
 }
 
-// Stop the engine and cleanup any metrics associated with it.
-// TODO: There is a possible race condition when this is called. Since
-// Engine.Collect is called as a go-routine, we could have an invocation
-// of the function block waiting for Engine.Stop to unlock
-// after which Collect would run after cleanup has been called.
-// This could result in a panic, though that should be caught and logged.
-// Since the monitor is stopping anyway this isn't a huge issue.
+// Stop the engine and cleanup any metrics associated with it. Collect calls
+// are serialized by the engine lock; collectorWG also joins background
+// collector runs that outlive the Collect call which started them.
 func (e *Engine) Stop() {
 	blip.Debug("Engine.Stop called")
 	e.Lock()
@@ -442,10 +443,20 @@ func (e *Engine) stopCollectors() {
 		cl.Lock()
 		if cl.running {
 			blip.Debug("%s: %s stopping", e.monitorId, cl.c.Domain())
-			cl.cancel()
+			if cl.cancel != nil {
+				cl.cancel()
+			}
 		} else {
 			blip.Debug("%s: %s not running", e.monitorId, cl.c.Domain())
 		}
+		cl.Unlock()
+	}
+
+	// Cleanup callbacks can release resources used by collector goroutines, so
+	// wait until every foreground or background run has observed cancellation.
+	e.collectorWG.Wait()
+	for _, cl := range e.collectors {
+		cl.Lock()
 		if cl.cleanup != nil {
 			blip.Debug("%s: %s cleanup", e.monitorId, cl.c.Domain())
 			cl.cleanup()

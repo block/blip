@@ -131,25 +131,80 @@ func (c ConfigDatabase) interpolate(interpolate func(string) string) {
 }
 
 func interpolateDatabaseConfigValue(value interface{}, interpolate func(string) string) interface{} {
-	switch typed := value.(type) {
-	case string:
-		return interpolate(typed)
-	case []interface{}:
-		for i := range typed {
-			typed[i] = interpolateDatabaseConfigValue(typed[i], interpolate)
-		}
-	case []string:
-		for i := range typed {
-			typed[i] = interpolate(typed[i])
-		}
-	case map[string]interface{}:
-		for key, item := range typed {
-			typed[key] = interpolateDatabaseConfigValue(item, interpolate)
-		}
-	case map[interface{}]interface{}:
-		for key, item := range typed {
-			typed[key] = interpolateDatabaseConfigValue(item, interpolate)
-		}
+	interpolated := interpolateDatabaseConfigReflect(reflect.ValueOf(value), interpolate)
+	if !interpolated.IsValid() {
+		return nil
 	}
-	return value
+	return interpolated.Interface()
+}
+
+func interpolateDatabaseConfigReflect(value reflect.Value, interpolate func(string) string) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		interpolated := interpolateDatabaseConfigReflect(value.Elem(), interpolate)
+		result := reflect.New(value.Type()).Elem()
+		result.Set(interpolated)
+		return result
+	case reflect.String:
+		result := reflect.New(value.Type()).Elem()
+		result.SetString(interpolate(value.String()))
+		return result
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iterator := value.MapRange()
+		for iterator.Next() {
+			result.SetMapIndex(
+				iterator.Key(),
+				interpolateDatabaseConfigReflect(iterator.Value(), interpolate),
+			)
+		}
+		return result
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			result.Index(i).Set(interpolateDatabaseConfigReflect(value.Index(i), interpolate))
+		}
+		return result
+	case reflect.Array:
+		result := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			result.Index(i).Set(interpolateDatabaseConfigReflect(value.Index(i), interpolate))
+		}
+		return result
+	case reflect.Struct:
+		result := reflect.New(value.Type()).Elem()
+		result.Set(value)
+		for i := 0; i < value.NumField(); i++ {
+			if !value.Type().Field(i).IsExported() {
+				continue
+			}
+			result.Field(i).Set(interpolateDatabaseConfigReflect(value.Field(i), interpolate))
+		}
+		return result
+	case reflect.Ptr:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.New(value.Type().Elem())
+		result.Elem().Set(interpolateDatabaseConfigReflect(value.Elem(), interpolate))
+		if result.Type() != value.Type() {
+			result = result.Convert(value.Type())
+		}
+		return result
+	default:
+		return value
+	}
 }

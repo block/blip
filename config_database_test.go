@@ -112,6 +112,155 @@ func TestConfigMonitorExternalModuleValidationAndInterpolation(t *testing.T) {
 	}
 }
 
+func TestConfigMonitorExternalModuleInterpolationPreservesTypedContainers(t *testing.T) {
+	const databaseType blip.DatabaseType = "test-typed-interpolation"
+	t.Setenv("BLIP_TEST_TYPED_VALUE", "from-environment")
+
+	type namedString string
+	type namedMap map[string]namedString
+	type namedSlice []namedString
+	type namedArray [2]namedString
+	type namedPointer *namedString
+	type namedConfig blip.ConfigDatabase
+	type nestedStruct struct {
+		Monitor namedString `yaml:"monitor"`
+	}
+	type namedStruct struct {
+		Environment namedString   `yaml:"environment"`
+		Nested      *nestedStruct `yaml:"nested"`
+		private     namedString
+	}
+	type decodedStruct struct {
+		Environment string `yaml:"environment"`
+		Nested      struct {
+			Monitor string `yaml:"monitor"`
+		} `yaml:"nested"`
+	}
+
+	type moduleConfig struct {
+		NestedConfig       map[string]string `yaml:"nested-config"`
+		TypedMap           map[string]string `yaml:"typed-map"`
+		NamedMap           map[string]string `yaml:"named-map"`
+		NamedSlice         []string          `yaml:"named-slice"`
+		NamedArray         []string          `yaml:"named-array"`
+		NamedStruct        decodedStruct     `yaml:"named-struct"`
+		NamedStructPointer decodedStruct     `yaml:"named-struct-pointer"`
+		Pointer            string            `yaml:"pointer"`
+		NilMap             map[string]string `yaml:"nil-map"`
+		NilSlice           []string          `yaml:"nil-slice"`
+		NilPointer         *string           `yaml:"nil-pointer"`
+	}
+
+	var validated moduleConfig
+	registerTestDatabaseModule(t, databaseType, func(cfg blip.ConfigMonitor) error {
+		return blip.DecodeDatabaseConfig(cfg.DatabaseConfig, &validated)
+	})
+
+	pointer := namedString("%{monitor.id}")
+	structValue := namedStruct{
+		Environment: "${BLIP_TEST_TYPED_VALUE}",
+		Nested:      &nestedStruct{Monitor: "%{monitor.id}"},
+		private:     "${BLIP_TEST_TYPED_VALUE}",
+	}
+	monitor := blip.ConfigMonitor{
+		MonitorId:    "typed-monitor",
+		DatabaseType: databaseType,
+		DatabaseConfig: blip.ConfigDatabase{
+			"nested-config": namedConfig{
+				"environment": namedString("${BLIP_TEST_TYPED_VALUE}"),
+			},
+			"typed-map": map[string]string{
+				"monitor": "%{monitor.id}",
+			},
+			"named-map": namedMap{
+				"environment": "${BLIP_TEST_TYPED_VALUE}",
+			},
+			"named-slice":          namedSlice{"${BLIP_TEST_TYPED_VALUE}", "%{monitor.id}"},
+			"named-array":          namedArray{"${BLIP_TEST_TYPED_VALUE}", "%{monitor.id}"},
+			"named-struct":         structValue,
+			"named-struct-pointer": &structValue,
+			"pointer":              namedPointer(&pointer),
+			"nil-map":              map[string]string(nil),
+			"nil-slice":            namedSlice(nil),
+			"nil-pointer":          (*namedString)(nil),
+		},
+	}
+	monitor.ApplyDefaults(blip.DefaultConfig())
+	monitor.InterpolateEnvVars()
+	monitor.InterpolateMonitor()
+
+	if err := monitor.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	nestedConfig, ok := monitor.DatabaseConfig["nested-config"].(namedConfig)
+	if !ok {
+		t.Fatalf("nested config type = %T, expected namedConfig", monitor.DatabaseConfig["nested-config"])
+	}
+	if got := nestedConfig["environment"]; got != namedString("from-environment") {
+		t.Fatalf("nested environment = %q", got)
+	}
+	if _, ok := nestedConfig["environment"].(namedString); !ok {
+		t.Fatalf("nested environment type = %T, expected namedString", nestedConfig["environment"])
+	}
+
+	typedMap, ok := monitor.DatabaseConfig["typed-map"].(map[string]string)
+	if !ok || typedMap["monitor"] != monitor.MonitorId {
+		t.Fatalf("typed map = %#v (%T)", monitor.DatabaseConfig["typed-map"], monitor.DatabaseConfig["typed-map"])
+	}
+	namedMapValue, ok := monitor.DatabaseConfig["named-map"].(namedMap)
+	if !ok || namedMapValue["environment"] != "from-environment" {
+		t.Fatalf("named map = %#v (%T)", monitor.DatabaseConfig["named-map"], monitor.DatabaseConfig["named-map"])
+	}
+	namedSliceValue, ok := monitor.DatabaseConfig["named-slice"].(namedSlice)
+	if !ok || len(namedSliceValue) != 2 || namedSliceValue[0] != "from-environment" || namedSliceValue[1] != namedString(monitor.MonitorId) {
+		t.Fatalf("named slice = %#v (%T)", monitor.DatabaseConfig["named-slice"], monitor.DatabaseConfig["named-slice"])
+	}
+	namedArrayValue, ok := monitor.DatabaseConfig["named-array"].(namedArray)
+	if !ok || namedArrayValue[0] != "from-environment" || namedArrayValue[1] != namedString(monitor.MonitorId) {
+		t.Fatalf("named array = %#v (%T)", monitor.DatabaseConfig["named-array"], monitor.DatabaseConfig["named-array"])
+	}
+	namedStructValue, ok := monitor.DatabaseConfig["named-struct"].(namedStruct)
+	if !ok || namedStructValue.Environment != "from-environment" || namedStructValue.Nested == nil || namedStructValue.Nested.Monitor != namedString(monitor.MonitorId) {
+		t.Fatalf("named struct = %#v (%T)", monitor.DatabaseConfig["named-struct"], monitor.DatabaseConfig["named-struct"])
+	}
+	if namedStructValue.private != "${BLIP_TEST_TYPED_VALUE}" {
+		t.Fatalf("unexported field was interpolated: %q", namedStructValue.private)
+	}
+	namedStructPointer, ok := monitor.DatabaseConfig["named-struct-pointer"].(*namedStruct)
+	if !ok || namedStructPointer == nil || namedStructPointer.Environment != "from-environment" || namedStructPointer.Nested == nil || namedStructPointer.Nested.Monitor != namedString(monitor.MonitorId) {
+		t.Fatalf("named struct pointer = %#v (%T)", monitor.DatabaseConfig["named-struct-pointer"], monitor.DatabaseConfig["named-struct-pointer"])
+	}
+	if namedStructPointer.private != "${BLIP_TEST_TYPED_VALUE}" {
+		t.Fatalf("unexported pointer field was interpolated: %q", namedStructPointer.private)
+	}
+	pointerValue, ok := monitor.DatabaseConfig["pointer"].(namedPointer)
+	if !ok || pointerValue == nil || *pointerValue != namedString(monitor.MonitorId) {
+		t.Fatalf("pointer = %#v (%T)", monitor.DatabaseConfig["pointer"], monitor.DatabaseConfig["pointer"])
+	}
+	if value, ok := monitor.DatabaseConfig["nil-map"].(map[string]string); !ok || value != nil {
+		t.Fatalf("nil map = %#v (%T)", monitor.DatabaseConfig["nil-map"], monitor.DatabaseConfig["nil-map"])
+	}
+	if value, ok := monitor.DatabaseConfig["nil-slice"].(namedSlice); !ok || value != nil {
+		t.Fatalf("nil slice = %#v (%T)", monitor.DatabaseConfig["nil-slice"], monitor.DatabaseConfig["nil-slice"])
+	}
+	if value, ok := monitor.DatabaseConfig["nil-pointer"].(*namedString); !ok || value != nil {
+		t.Fatalf("nil pointer = %#v (%T)", monitor.DatabaseConfig["nil-pointer"], monitor.DatabaseConfig["nil-pointer"])
+	}
+
+	if validated.NestedConfig["environment"] != "from-environment" ||
+		validated.TypedMap["monitor"] != monitor.MonitorId ||
+		validated.NamedMap["environment"] != "from-environment" ||
+		len(validated.NamedSlice) != 2 || validated.NamedSlice[1] != monitor.MonitorId ||
+		len(validated.NamedArray) != 2 || validated.NamedArray[1] != monitor.MonitorId ||
+		validated.NamedStruct.Environment != "from-environment" || validated.NamedStruct.Nested.Monitor != monitor.MonitorId ||
+		validated.NamedStructPointer.Environment != "from-environment" || validated.NamedStructPointer.Nested.Monitor != monitor.MonitorId ||
+		validated.Pointer != monitor.MonitorId ||
+		len(validated.NilMap) != 0 || len(validated.NilSlice) != 0 || validated.NilPointer != nil {
+		t.Fatalf("decoded module config = %#v", validated)
+	}
+}
+
 func TestRegisterDatabaseModuleValidation(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -10,6 +10,7 @@ package monitor
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"runtime"
 	"sync"
 	"time"
@@ -485,12 +486,12 @@ func (m *Monitor) makeDB() (blip.DbProvider, *sql.DB, string, error) {
 
 	provider, dsn, err := providerFactory.MakeProvider(m.cfg)
 	if err != nil {
-		if provider != nil {
+		if !nilDBProvider(provider) {
 			provider.Close()
 		}
 		return nil, nil, "", err
 	}
-	if provider == nil {
+	if nilDBProvider(provider) {
 		return nil, nil, "", fmt.Errorf("database provider factory returned a nil provider")
 	}
 	db := provider.Primary()
@@ -499,6 +500,19 @@ func (m *Monitor) makeDB() (blip.DbProvider, *sql.DB, string, error) {
 		return nil, nil, "", fmt.Errorf("database provider returned a nil primary connection")
 	}
 	return provider, db, dsn, nil
+}
+
+func nilDBProvider(provider blip.DbProvider) bool {
+	if provider == nil {
+		return true
+	}
+	value := reflect.ValueOf(provider)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // closeDB releases the current monitor-owned database resources. The caller

@@ -89,6 +89,17 @@ func TestMonitorMakeDBRejectsInvalidProvider(t *testing.T) {
 			wantError: "nil provider",
 		},
 		{
+			name:      "typed nil provider",
+			provider:  (*testDBProvider)(nil),
+			wantError: "nil provider",
+		},
+		{
+			name:       "factory error with typed nil provider",
+			provider:   (*testDBProvider)(nil),
+			factoryErr: errors.New("make failed"),
+			wantError:  "make failed",
+		},
+		{
 			name:      "nil primary",
 			provider:  &testDBProvider{},
 			wantError: "nil primary",
@@ -110,7 +121,7 @@ func TestMonitorMakeDBRejectsInvalidProvider(t *testing.T) {
 			if err == nil || !errors.Is(err, test.factoryErr) && !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("makeDB error = %v, expected %q", err, test.wantError)
 			}
-			if provider, ok := test.provider.(*testDBProvider); ok && provider.closeCalls != 1 {
+			if provider, ok := test.provider.(*testDBProvider); ok && provider != nil && provider.closeCalls != 1 {
 				t.Fatalf("provider Close calls = %d, expected 1", provider.closeCalls)
 			}
 		})

@@ -112,6 +112,29 @@ func TestConfigMonitorExternalModuleValidationAndInterpolation(t *testing.T) {
 	}
 }
 
+func TestConfigMonitorExternalModuleInterpolationResolvesEachPlaceholder(t *testing.T) {
+	t.Setenv("BLIP_TEST_DATABASE_HOST", "database.example")
+	t.Setenv("BLIP_TEST_DATABASE_PORT", "5432")
+
+	monitor := blip.ConfigMonitor{
+		MonitorId: "external-monitor",
+		Hostname:  "database.example:5432",
+		DatabaseConfig: blip.ConfigDatabase{
+			"endpoint": "${BLIP_TEST_DATABASE_HOST}:${BLIP_TEST_DATABASE_PORT}",
+			"identity": "%{monitor.id}@%{monitor.hostname}",
+		},
+	}
+	monitor.InterpolateEnvVars()
+	monitor.InterpolateMonitor()
+
+	if got := monitor.DatabaseConfig["endpoint"]; got != "database.example:5432" {
+		t.Fatalf("endpoint = %q, expected database.example:5432", got)
+	}
+	if got := monitor.DatabaseConfig["identity"]; got != "external-monitor@database.example:5432" {
+		t.Fatalf("identity = %q, expected external-monitor@database.example:5432", got)
+	}
+}
+
 func TestConfigMonitorExternalModuleInterpolationPreservesTypedContainers(t *testing.T) {
 	const databaseType blip.DatabaseType = "test-typed-interpolation"
 	t.Setenv("BLIP_TEST_TYPED_VALUE", "from-environment")

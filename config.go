@@ -32,15 +32,17 @@ func interpolateEnv(v string) string {
 	if !strings.Contains(v, "${") {
 		return v
 	}
-	m := envvar.FindStringSubmatch(v)
-	if len(m) != 4 {
-		return v // strict match only
-	}
-	v2 := os.Getenv(m[1])
-	if v2 == "" && m[2] != "" {
-		return m[3]
-	}
-	return envvar.ReplaceAllLiteralString(v, v2)
+	return envvar.ReplaceAllStringFunc(v, func(match string) string {
+		m := envvar.FindStringSubmatch(match)
+		if len(m) != 4 {
+			return match // strict match only
+		}
+		value := os.Getenv(m[1])
+		if value == "" && m[2] != "" {
+			return m[3]
+		}
+		return value
+	})
 }
 
 // setBool sets c to the value of b if c is nil (not set). Pointers are required
@@ -641,25 +643,27 @@ func (c *ConfigMonitor) interpolateMon(v string) string {
 	if !strings.Contains(v, "%{monitor.") {
 		return v
 	}
-	m := monvar.FindStringSubmatch(v)
-	if len(m) != 3 {
-		return v // strict match only
-	}
-	if strings.HasPrefix(m[2], "tags.") {
-		if c.Tags == nil {
-			return ""
+	return monvar.ReplaceAllStringFunc(v, func(match string) string {
+		m := monvar.FindStringSubmatch(match)
+		if len(m) != 3 || m[1] != "monitor" {
+			return match // strict match only
 		}
-		s := strings.SplitN(m[2], ".", 2)
-		return c.Tags[s[1]]
-	} else if strings.HasPrefix(m[2], "meta.") {
-		if c.Meta == nil {
-			return ""
+		if strings.HasPrefix(m[2], "tags.") {
+			if c.Tags == nil {
+				return ""
+			}
+			s := strings.SplitN(m[2], ".", 2)
+			return c.Tags[s[1]]
+		} else if strings.HasPrefix(m[2], "meta.") {
+			if c.Meta == nil {
+				return ""
+			}
+			s := strings.SplitN(m[2], ".", 2)
+			return c.Meta[s[1]]
 		}
-		s := strings.SplitN(m[2], ".", 2)
-		return c.Meta[s[1]]
-	}
 
-	return monvar.ReplaceAllString(v, c.fieldValue(m[2]))
+		return c.fieldValue(m[2])
+	})
 }
 
 func (c *ConfigMonitor) fieldValue(f string) string {

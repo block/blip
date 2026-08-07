@@ -16,6 +16,10 @@ Monitor variable
 `${}` and `%{}` are always required.
 {{< /hint >}}
 
+{{< hint type=note >}}
+An external monitor's [`database-type`]({{< ref "config-file#database-type" >}}) supports environment-variable interpolation but not monitor-variable interpolation because it selects monitor defaults. String values nested inside [`database-config`]({{< ref "config-file#database-config" >}}) support both forms recursively.
+{{< /hint >}}
+
 Environment variable interpolation is a simple implementation of the shell standard.
 In Blip, only the two cases shown above are supported, and `default` must be a literal value (it cannot be another `${}`).
 

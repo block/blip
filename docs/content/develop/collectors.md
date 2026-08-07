@@ -141,6 +141,8 @@ A collector that does not depend on the monitor's database engine returns
 `blip.DatabaseTypeAny`. The database-neutral type cannot be combined with
 specific database types.
 
+When adding collectors for a complete external database engine, register that database type through a [database module]({{< ref "/develop/database-modules" >}}) before loading monitors.
+
 ## Long-running
 
 As of Blip v1.2.0, long-running collectors are possible using one of two approaches:

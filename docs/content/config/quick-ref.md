@@ -122,10 +122,11 @@ tls:
   skip-verify: false
 
 # ---------------------------------------------------------------------------
-# Monitors (MySQL instances)
+# Monitors
 # ---------------------------------------------------------------------------
 
 monitors:
+  # Built-in MySQL monitor
   - id: host1 # Optional; Blip auto-sets based on MySQL config
 
     # -----------------------------------------------
@@ -158,4 +159,13 @@ monitors:
     tags:
       hostname: "host1"  # overrides monitor default
       foo:      "bar"    # new tag
+
+  # -------------------------------------------------------------------------
+  # External database module monitor (only when registered before server boot)
+  - id: external
+    database-type: my-database
+    hostname: database.example:1234
+    username: metrics
+    database-config:
+      module-option: value
 ```

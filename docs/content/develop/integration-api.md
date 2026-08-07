@@ -2,7 +2,7 @@
 ---
 
 Integration allows you to customize every major aspect of Blip without modifying its core code.
-That makes it easy and safe to tailor Blip to meet any requirements and work in any environment.
+That lets you tailor Blip to meet your requirements and work in your environment.
 For example, Blip does not collect [MySQL NDB](https://dev.mysql.com/doc/refman/en/mysql-cluster.html) metrics, but if you run NDB, you can write a [custom metrics collector]({{< ref "develop/collectors" >}}) for NDB, register it in Blip, then collect NDB metrics exactly the same as the built-in metric collectors.
 In fact, the built-in metric collectors implement the same interface; the only difference is that Blip automatically registers them on startup.
 
@@ -19,6 +19,7 @@ How you integrate with Blip depends on what you're trying to customize:
 |Parsing AWS password secrets|Plugins|
 |AWS configs|Factories|
 |Database connections|Factories|
+|External database engines|[Database modules]({{< ref "/develop/database-modules" >}})|
 |HTTP clients|Factories|
 |Timeouts|Variables|
 
@@ -29,7 +30,7 @@ How you integrate with Blip depends on what you're trying to customize:
 ## Registry
 
 A registry maps a resource name to a factory that produces an object for the resource.
-Blip has three registries:
+Blip has three object registries:
 
 |Registry|Resource Name|Factory Produces|
 |:-------|:------------|:---------------|
@@ -43,28 +44,34 @@ Every registry has a corresponding `Make` function that Blip uses to make object
 For example, when a [plan]({{< ref "intro/plans" >}}) collects the `status.global` domain, internally Blip makes a call like:
 
 ```go
-collector, err := metrics.Make("status.global")
+collector, err := metrics.Make("status.global", args)
 ```
 
 That works because Blip registered the built-in factory for the `status.global` metric domain on startup.
 This is also how [custom metric collectors]({{< ref "develop/collectors" >}}) work: by registering a custom metric domain name and factory.
+
+External database modules use a separate [`RegisterDatabaseModule`](https://pkg.go.dev/github.com/cashapp/blip/v2#RegisterDatabaseModule) hook to declare and validate a database type. The module still uses the metrics registry for its collectors. See [Database modules]({{< ref "/develop/database-modules" >}}) for the complete integration contract.
 
 ## Factories
 
 [Factories](https://pkg.go.dev/github.com/cashapp/blip/v2#Factories) are interfaces that let you override certain object creation of Blip.
 Every factory is optional: if specified, it overrides the built-in factory.
 
+An external database module decorates the database factory instead of replacing unrelated database support. See [Database modules]({{< ref "/develop/database-modules" >}}) for the fallback and provider delegation requirements.
+
 ## Plugins
 
 [Plugins](https://pkg.go.dev/github.com/cashapp/blip/v2#Plugins) are function callbacks that let you override specific functionality of Blip.
 Every plugin is optional: if specified, it overrides the built-in functionality.
 
-### AWS Password Secrets
+### AWS password secrets
 
-Set [`Plugins.ParsePasswordSecret`](https://pkg.go.dev/github.com/cashapp/blip/v2#Plugins) to customize how Blip maps the raw AWS Secrets Manager payload from [`config.aws.password-secret`]({{< ref "/config/config-file#password-secret" >}}) to MySQL credentials.
+Set [`Plugins.ParsePasswordSecret`](https://pkg.go.dev/github.com/cashapp/blip/v2#Plugins) to customize how Blip maps the raw AWS Secrets Manager payload from [`config.aws.password-secret`]({{< ref "/config/config-file#password-secret" >}}) to database credentials.
 If this callback is not set, Blip uses [`DefaultPasswordSecretParser`](https://pkg.go.dev/github.com/cashapp/blip/v2#DefaultPasswordSecretParser): `password` is required, and `username` is optional.
 Blip passes `SecretString` bytes when present; otherwise, it passes `SecretBinary` bytes.
 The `credentials` argument is initialized with the configured monitor username; custom parsers must set `credentials.Password` and can override `credentials.Username`.
+
+Blip's built-in MySQL factory and external modules that use the shared credential factory honor this callback.
 
 ```go
 plugins.ParsePasswordSecret = func(ctx context.Context, cfg blip.ConfigMonitor, payload []byte, credentials *blip.DbCredentials) error {

@@ -74,7 +74,7 @@ Internally, Blip stores metrics in a [`Metrics` data structure](https://pkg.go.d
 type Metrics struct {
 	Begin     time.Time                // when collection started
 	End       time.Time                // when collection completed
-	MonitorId string                   // ID of monitor (MySQL)
+	MonitorId string                   // ID of monitor
 	Plan      string                   // plan name
 	Level     string                   // level name
 	State     string                   // state of monitor

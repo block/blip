@@ -6,9 +6,9 @@ A plan table contains one plan per row:
 
 {{< hint type=note >}}
 Plan-table storage is MySQL-specific. The connection configured by a top-level
-`plans.monitor` must be MySQL, and PostgreSQL monitors reject `plans.table` in
-their monitor configuration. PostgreSQL monitors can use plan files or
-compatible shared plans.
+`plans.monitor` must be MySQL, and external database monitors reject
+`plans.table` in their monitor configuration. External database monitors can
+use plan files or compatible shared plans.
 {{< /hint >}}
 
 ```sql

@@ -761,7 +761,28 @@ Section [`exporter`](#exporter) is exactly the same in a monitor.
 
 <b>Refer to [Monitor Defaults](#monitor-defaults) for configuring MySQL instances, and remember: [`mysql`](#mysql) variables are top-level in a monitor (omit `mysql:` and include the variables directly).</b>
 
-Monitors have three variables that only appear in monitors: `id`, `meta`, and `plan`.
+All monitors have three variables that only appear in monitor entries: `id`,
+`meta`, and `plan`. A binary that enables an external database module can also
+use `database-type` and `database-config`:
+
+```yaml
+monitors:
+  - id: external
+    database-type: my-database
+    hostname: database.example:1234
+    database-config:
+      module-option: value
+```
+
+An omitted `database-type` retains Blip's built-in MySQL behavior. The type is
+a literal module identifier, although direct environment-variable interpolation
+such as `${DATABASE_TYPE}` is supported. Monitor-field interpolation is not
+supported for this structural value.
+
+The contents of `database-config` belong to the selected module. Blip
+interpolates string values, redacts the complete section from logged config,
+and asks the registered module to validate it. Refer to the external module for
+its supported fields. Blip itself does not register a non-MySQL module.
 
 ### `id`
 

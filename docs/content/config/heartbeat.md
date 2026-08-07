@@ -7,8 +7,8 @@ For example, `Seconds_Behind_Source` from `SHOW REPLICA STATUS` (or `Seconds_Beh
 Consequently, external replication heartbeats are an industry norm because they are easy and accurate&mdash;and they work the same across all versions and distributions of MySQL, including the the cloud.
 
 {{< hint type=note >}}
-Blip heartbeat is MySQL-specific. PostgreSQL monitors do not inherit global
-heartbeat defaults and reject monitor-level heartbeat configuration.
+Blip heartbeat is MySQL-specific. External database monitors do not inherit
+global heartbeat defaults and reject monitor-level heartbeat configuration.
 {{< /hint >}}
 
 ## Quick Start

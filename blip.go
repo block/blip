@@ -34,11 +34,11 @@ const (
 	EVENT
 )
 
-// Metrics are metrics collected for one plan level, from one MySQL instance.
+// Metrics are metrics collected for one plan level, from one monitor.
 type Metrics struct {
 	Begin     time.Time                // when collection started
 	End       time.Time                // when collection completed
-	MonitorId string                   // ID of monitor (MySQL)
+	MonitorId string                   // ID of monitor
 	Plan      string                   // plan name
 	Level     string                   // level name
 	Interval  uint                     // interval number
@@ -99,7 +99,7 @@ type SinkFactoryArgs struct {
 	Tags      map[string]string // config.monitor.tags
 }
 
-// DbCredentials are MySQL credentials parsed or loaded for a connection.
+// DbCredentials are database credentials parsed or loaded for a connection.
 type DbCredentials struct {
 	Username string
 	Password string

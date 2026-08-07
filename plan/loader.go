@@ -609,21 +609,26 @@ func validatePlanDatabaseCompatibility(plan blip.Plan) error {
 
 	commonTypes := map[blip.DatabaseType]bool{}
 	domainTypes := make([]string, 0, len(domains))
-	for i, domain := range domains {
+	hasDatabaseConstraint := false
+	for _, domain := range domains {
 		supportedTypes, err := metrics.SupportedDatabaseTypes(domain)
 		if err != nil {
 			return err
 		}
 		domainTypes = append(domainTypes, fmt.Sprintf("%s=%v", domain, supportedTypes))
+		if len(supportedTypes) == 1 && supportedTypes[0] == blip.DatabaseTypeAny {
+			continue
+		}
 
 		supported := map[blip.DatabaseType]bool{}
 		for _, databaseType := range supportedTypes {
 			supported[databaseType] = true
-			if i == 0 {
+			if !hasDatabaseConstraint {
 				commonTypes[databaseType] = true
 			}
 		}
-		if i == 0 {
+		if !hasDatabaseConstraint {
+			hasDatabaseConstraint = true
 			continue
 		}
 		for databaseType := range commonTypes {
@@ -633,7 +638,7 @@ func validatePlanDatabaseCompatibility(plan blip.Plan) error {
 		}
 	}
 
-	if len(commonTypes) == 0 {
+	if hasDatabaseConstraint && len(commonTypes) == 0 {
 		return fmt.Errorf("collectors have no common database type: %s", strings.Join(domainTypes, ", "))
 	}
 	return nil

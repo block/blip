@@ -33,7 +33,7 @@ func TestDynamicPasswordFileReloads(t *testing.T) {
 	credentialFunc, selected, err := credentials.NewFactory(nil, nil).Dynamic(blip.ConfigMonitor{
 		Username:     "metrics",
 		PasswordFile: passwordFile,
-	})
+	}, "3306")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestDynamicPreservesSourcePrecedence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			credentialFunc, selected, err := credentials.NewFactory(nil, nil).Dynamic(tt.config)
+			credentialFunc, selected, err := credentials.NewFactory(nil, nil).Dynamic(tt.config, "3306")
 			if !selected {
 				t.Fatal("configured source was not selected")
 			}
@@ -104,7 +104,7 @@ func TestDynamicPreservesSourcePrecedence(t *testing.T) {
 	}
 }
 
-func TestDynamicIAMUsesDatabaseDefaultPort(t *testing.T) {
+func TestDynamicIAMUsesCallerDefaultPort(t *testing.T) {
 	iamAuth := true
 	factory := credentials.NewFactory(staticAWSConfigFactory{config: awsv2.Config{
 		Region: "us-west-2",
@@ -118,41 +118,41 @@ func TestDynamicIAMUsesDatabaseDefaultPort(t *testing.T) {
 	}}, nil)
 
 	tests := []struct {
-		name         string
-		databaseType blip.DatabaseType
-		hostname     string
-		wantHost     string
+		name        string
+		defaultPort string
+		hostname    string
+		wantHost    string
 	}{
 		{
-			name:     "implicit MySQL",
-			hostname: "mysql.example",
-			wantHost: "mysql.example:3306",
+			name:        "MySQL default",
+			defaultPort: "3306",
+			hostname:    "mysql.example",
+			wantHost:    "mysql.example:3306",
 		},
 		{
-			name:         "PostgreSQL",
-			databaseType: blip.DatabaseTypePostgres,
-			hostname:     "postgres.example",
-			wantHost:     "postgres.example:5432",
+			name:        "external engine default",
+			defaultPort: "5432",
+			hostname:    "postgres.example",
+			wantHost:    "postgres.example:5432",
 		},
 		{
-			name:         "PostgreSQL custom port",
-			databaseType: blip.DatabaseTypePostgres,
-			hostname:     "postgres.example:6432",
-			wantHost:     "postgres.example:6432",
+			name:        "explicit port",
+			defaultPort: "5432",
+			hostname:    "postgres.example:6432",
+			wantHost:    "postgres.example:6432",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			credentialFunc, selected, err := factory.Dynamic(blip.ConfigMonitor{
-				DatabaseType: tt.databaseType,
-				Hostname:     tt.hostname,
-				Username:     "metrics",
+				Hostname: tt.hostname,
+				Username: "metrics",
 				AWS: blip.ConfigAWS{
 					IAMAuth: &iamAuth,
 					Region:  "us-west-2",
 				},
-			})
+			}, tt.defaultPort)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,11 +175,27 @@ func TestDynamicIAMUsesDatabaseDefaultPort(t *testing.T) {
 	}
 }
 
+func TestDynamicIAMRequiresCallerDefaultPort(t *testing.T) {
+	iamAuth := true
+	factory := credentials.NewFactory(staticAWSConfigFactory{config: awsv2.Config{Region: "us-west-2"}}, nil)
+	credentialFunc, selected, err := factory.Dynamic(blip.ConfigMonitor{
+		Hostname: "database.example",
+		Username: "metrics",
+		AWS: blip.ConfigAWS{
+			IAMAuth: &iamAuth,
+			Region:  "us-west-2",
+		},
+	}, "")
+	if !selected || credentialFunc != nil || err == nil || !strings.Contains(err.Error(), "default port") {
+		t.Fatalf("Dynamic returned func=%v selected=%t err=%v", credentialFunc != nil, selected, err)
+	}
+}
+
 func TestDynamicReportsNoSharedSource(t *testing.T) {
 	credentialFunc, selected, err := credentials.NewFactory(nil, nil).Dynamic(blip.ConfigMonitor{
 		Username: "metrics",
 		Password: "static",
-	})
+	}, "3306")
 	if err != nil || selected || credentialFunc != nil {
 		t.Fatalf("Dynamic returned func=%v selected=%t err=%v", credentialFunc != nil, selected, err)
 	}

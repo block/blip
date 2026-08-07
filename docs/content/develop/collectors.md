@@ -133,9 +133,13 @@ preparation:
 
 ```go
 func (myFactory) DatabaseTypes(string) []blip.DatabaseType {
-    return []blip.DatabaseType{blip.DatabaseTypePostgres}
+    return []blip.DatabaseType{"my-database"}
 }
 ```
+
+A collector that does not depend on the monitor's database engine returns
+`blip.DatabaseTypeAny`. The database-neutral type cannot be combined with
+specific database types.
 
 ## Long-running
 

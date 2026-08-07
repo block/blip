@@ -403,7 +403,8 @@ type ConfigMonitor struct {
 	// Empty values retain Blip's historical MySQL behavior.
 	DatabaseType DatabaseType `yaml:"database-type,omitempty"`
 
-	// ConfigMySQL:
+	// Shared connection identity and credentials. Socket and MyCnf are specific
+	// to Blip's built-in MySQL connection factory.
 	Socket         string `yaml:"socket,omitempty"`
 	Hostname       string `yaml:"hostname,omitempty"`
 	MyCnf          string `yaml:"mycnf,omitempty"`
@@ -422,9 +423,12 @@ type ConfigMonitor struct {
 	Heartbeat ConfigHeartbeat        `yaml:"heartbeat,omitempty"`
 	Plans     ConfigPlans            `yaml:"plans,omitempty"`
 	Plan      string                 `yaml:"plan,omitempty"`
-	Postgres  ConfigPostgres         `yaml:"postgres,omitempty"`
-	Sinks     ConfigSinks            `yaml:"sinks,omitempty"`
-	TLS       ConfigTLS              `yaml:"tls,omitempty"`
+	// DatabaseConfig is opaque configuration owned by the external module
+	// selected by DatabaseType. MySQL continues to use the historical monitor
+	// fields above and rejects this section.
+	DatabaseConfig ConfigDatabase `yaml:"database-config,omitempty"`
+	Sinks          ConfigSinks    `yaml:"sinks,omitempty"`
+	TLS            ConfigTLS      `yaml:"tls,omitempty"`
 
 	Meta map[string]string `yaml:"meta,omitempty"`
 }
@@ -432,13 +436,6 @@ type ConfigMonitor struct {
 const (
 	DEFAULT_MONITOR_USERNAME        = "blip"
 	DEFAULT_MONITOR_TIMEOUT_CONNECT = "10s"
-)
-
-type DatabaseType string
-
-const (
-	DatabaseTypeMySQL    DatabaseType = "mysql"
-	DatabaseTypePostgres DatabaseType = "postgres"
 )
 
 func DefaultConfigMonitor() ConfigMonitor {
@@ -459,33 +456,55 @@ func DefaultConfigMonitor() ConfigMonitor {
 }
 
 // EffectiveDatabaseType returns the configured database type. An omitted
-// value retains Blip's historical MySQL behavior. Environment interpolation is
-// resolved here because monitor defaults are applied before the normal
-// interpolation pass.
+// value retains Blip's historical MySQL behavior. Direct environment-variable
+// interpolation is resolved before defaults are selected; database type is a
+// structural discriminator and does not support monitor-field interpolation.
 func (c ConfigMonitor) EffectiveDatabaseType() DatabaseType {
-	databaseType := DatabaseType(interpolateEnv(string(c.DatabaseType)))
+	databaseType := interpolateEnv(string(c.DatabaseType))
 	if databaseType == "" {
 		return DatabaseTypeMySQL
 	}
-	return databaseType
+	return DatabaseType(databaseType)
 }
 
 func (c ConfigMonitor) Validate() error {
-	switch c.EffectiveDatabaseType() {
-	case DatabaseTypeMySQL:
-		if c.Postgres.Set() {
-			return fmt.Errorf("config.monitor.postgres requires database-type %q", DatabaseTypePostgres)
+	databaseType := c.EffectiveDatabaseType()
+	if databaseType == DatabaseTypeMySQL {
+		if len(c.DatabaseConfig) > 0 {
+			return fmt.Errorf("config.monitor.database-config requires an external database type")
 		}
-	case DatabaseTypePostgres:
-		if c.Socket != "" {
-			return fmt.Errorf("config.monitor.socket is only supported for database-type %q", DatabaseTypeMySQL)
-		}
-		if c.MyCnf != "" {
-			return fmt.Errorf("config.monitor.mycnf is only supported for database-type %q", DatabaseTypeMySQL)
-		}
-		return c.Postgres.Validate()
-	default:
-		return fmt.Errorf("config.monitor.database-type: invalid database type %q", c.DatabaseType)
+		return nil
+	}
+	if databaseType == DatabaseTypeAny {
+		return fmt.Errorf("config.monitor.database-type: %q is reserved for database-neutral collectors", databaseType)
+	}
+	if !ValidDatabaseType(databaseType) {
+		return fmt.Errorf("config.monitor.database-type: invalid database type %q", databaseType)
+	}
+	if c.Socket != "" {
+		return fmt.Errorf("config.monitor.socket is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	if c.MyCnf != "" {
+		return fmt.Errorf("config.monitor.mycnf is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	if c.Heartbeat.set() {
+		return fmt.Errorf("config.monitor.heartbeat is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	if c.Plans.Change.set() {
+		return fmt.Errorf("config.monitor.plans.change is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	if c.Plans.Table != "" {
+		return fmt.Errorf("config.monitor.plans.table is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	if c.Exporter.set() {
+		return fmt.Errorf("config.monitor.exporter is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	module, ok := registeredDatabaseModule(databaseType)
+	if !ok {
+		return fmt.Errorf("config.monitor.database-type: database module %q is not registered", databaseType)
+	}
+	if err := module.ValidateConfig(c); err != nil {
+		return fmt.Errorf("config.monitor.database-config for %q: %w", databaseType, err)
 	}
 	return nil
 }
@@ -497,13 +516,17 @@ func (c ConfigMonitor) Redacted() ConfigMonitor {
 
 func (c ConfigMonitor) redacted(seen map[*ConfigMonitor]*ConfigMonitor) ConfigMonitor {
 	c.Password = redactPassword(c.Password)
+	// External module configuration is opaque to Blip, so redact the entire
+	// section rather than guessing which module-owned fields might be secrets.
+	c.DatabaseConfig = nil
 	c.Sinks = c.Sinks.redacted()
 	c.Plans = c.Plans.redacted(seen)
 	return c
 }
 
 func (c *ConfigMonitor) ApplyDefaults(b Config) {
-	if c.EffectiveDatabaseType() == DatabaseTypeMySQL {
+	databaseType := c.EffectiveDatabaseType()
+	if databaseType == DatabaseTypeMySQL {
 		if c.Socket == "" {
 			c.Socket = b.MySQL.Socket
 		}
@@ -545,15 +568,16 @@ func (c *ConfigMonitor) ApplyDefaults(b Config) {
 		c.Sinks = ConfigSinks{}
 	}
 	c.AWS.ApplyDefaults(b)
-	c.Exporter.ApplyDefaults(b)
 	c.HA.ApplyDefaults(b)
-	c.Heartbeat.ApplyDefaults(b)
-	c.Plans.ApplyDefaults(b)
-	if c.EffectiveDatabaseType() == DatabaseTypePostgres {
-		postgresDefaults := DefaultConfigPostgres()
-		postgresDefaults.ConnectTimeout = c.TimeoutConnect
-		c.Postgres.ApplyDefaults(postgresDefaults)
+	// Exporter emulation, heartbeat writes, and plan state changes are
+	// MySQL-specific. Do not inherit their global defaults into external database
+	// monitors; explicit monitor values remain intact so Validate can report the
+	// unsupported configuration.
+	if databaseType == DatabaseTypeMySQL {
+		c.Exporter.ApplyDefaults(b)
+		c.Heartbeat.ApplyDefaults(b)
 	}
+	c.Plans.applyDefaults(b, databaseType == DatabaseTypeMySQL)
 	c.Sinks.ApplyDefaults(b)
 	c.TLS.ApplyDefaults(b)
 }
@@ -580,7 +604,7 @@ func (c *ConfigMonitor) InterpolateEnvVars() {
 	c.Heartbeat.InterpolateEnvVars()
 	c.Plans.InterpolateEnvVars()
 	c.Plan = interpolateEnv(c.Plan)
-	c.Postgres.InterpolateEnvVars()
+	c.DatabaseConfig.interpolate(interpolateEnv)
 	c.Sinks.InterpolateEnvVars()
 	c.TLS.InterpolateEnvVars()
 }
@@ -606,7 +630,7 @@ func (c *ConfigMonitor) InterpolateMonitor() {
 	c.Heartbeat.InterpolateMonitor(c)
 	c.Plans.InterpolateMonitor(c)
 	c.Plan = c.interpolateMon(c.Plan)
-	c.Postgres.InterpolateMonitor(c)
+	c.DatabaseConfig.interpolate(c.interpolateMon)
 	c.Sinks.InterpolateMonitor(c)
 	c.TLS.InterpolateMonitor(c)
 }
@@ -658,20 +682,6 @@ func (c *ConfigMonitor) fieldValue(f string) string {
 		return c.PasswordFile
 	case "timeout-connect":
 		return c.TimeoutConnect
-	case "postgres.database":
-		return c.Postgres.Database
-	case "postgres.application-name":
-		return c.Postgres.ApplicationName
-	case "postgres.ssl-mode":
-		return c.Postgres.SSLMode
-	case "postgres.connect-timeout":
-		return c.Postgres.ConnectTimeout
-	case "postgres.statement-timeout":
-		return c.Postgres.StatementTimeout
-	case "postgres.lock-timeout":
-		return c.Postgres.LockTimeout
-	case "postgres.dial-address":
-		return c.Postgres.DialAddress
 	default:
 		return ""
 	}
@@ -735,6 +745,10 @@ type ConfigExporter struct {
 	Plan  string            `yaml:"plan,omitempty"`
 }
 
+func (c ConfigExporter) set() bool {
+	return c.Mode != "" || c.Plan != "" || len(c.Flags) > 0
+}
+
 func DefaultConfigExporter() ConfigExporter {
 	return ConfigExporter{}
 }
@@ -796,6 +810,10 @@ type ConfigHeartbeat struct {
 	SourceId string `yaml:"source-id,omitempty"`
 	Role     string `yaml:"role,omitempty"`
 	Table    string `yaml:"table,omitempty"`
+}
+
+func (c ConfigHeartbeat) set() bool {
+	return c.Freq != "" || c.SourceId != "" || c.Role != "" || c.Table != ""
 }
 
 const (
@@ -966,6 +984,15 @@ func DefaultConfigPlans() ConfigPlans {
 }
 
 func (c ConfigPlans) Validate() error {
+	if c.Table == "" || c.Monitor == nil {
+		return nil
+	}
+	if c.Monitor.EffectiveDatabaseType() != DatabaseTypeMySQL {
+		return fmt.Errorf("config.plans.monitor.database-type: config.plans.table is only supported for database-type %q", DatabaseTypeMySQL)
+	}
+	if err := c.Monitor.Validate(); err != nil {
+		return fmt.Errorf("config.plans.monitor: %w", err)
+	}
 	return nil
 }
 
@@ -986,11 +1013,17 @@ func (c ConfigPlans) redacted(seen map[*ConfigMonitor]*ConfigMonitor) ConfigPlan
 }
 
 func (c *ConfigPlans) ApplyDefaults(b Config) {
+	c.applyDefaults(b, true)
+}
+
+func (c *ConfigPlans) applyDefaults(b Config, applyChange bool) {
 	if len(c.Files) == 0 && len(b.Plans.Files) > 0 {
 		c.Files = make([]string, len(b.Plans.Files))
 		copy(c.Files, b.Plans.Files)
 	}
-	c.Change.ApplyDefaults(b)
+	if applyChange {
+		c.Change.ApplyDefaults(b)
+	}
 }
 
 func (c *ConfigPlans) InterpolateEnvVars() {
@@ -1077,6 +1110,13 @@ func (c ConfigPlanChange) Enabled() bool {
 		c.Standby.Plan != "" ||
 		c.ReadOnly.Plan != "" ||
 		c.Active.Plan != ""
+}
+
+func (c ConfigPlanChange) set() bool {
+	return c.Offline.After != "" || c.Offline.Plan != "" ||
+		c.Standby.After != "" || c.Standby.Plan != "" ||
+		c.ReadOnly.After != "" || c.ReadOnly.Plan != "" ||
+		c.Active.After != "" || c.Active.Plan != ""
 }
 
 // --------------------------------------------------------------------------

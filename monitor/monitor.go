@@ -1,7 +1,7 @@
 // Copyright 2024 Block, Inc.
 
 // Package monitor provides core Blip components that, together, monitor one
-// MySQL instance. Most monitoring logic happens in the package, but package
+// database target. Most monitoring logic happens in the package, but package
 // metrics is closely related: this latter actually collect metrics, but it
 // is driven by this package. Other Blip packages are mostly set up and support
 // of monitors.
@@ -25,7 +25,7 @@ import (
 	"github.com/cashapp/blip/v2/status"
 )
 
-// Monitor monitors one MySQL instance. The monitor is a high-level component
+// Monitor monitors one database target. The monitor is a high-level component
 // that runs (and keeps running) four monitor subsystems:
 //   - Plan changer (PCH)
 //   - Level collector (LCO)
@@ -37,7 +37,7 @@ import (
 // If any subsystem crashes (returns for any reason or panics), the monitor
 // stops and restarts all subsystems. The monitor doesn't stop until Stop is
 // called. Consequently, if a monitor is not configured correctly (for example,
-// it can't connect to MySQL), it tries and reports every forever.
+// it can't connect to the database), it tries and reports every forever.
 //
 // Monitors are loaded, created, and initially started only by the MonitorLoader.
 // A monitor can be stopped and started (again) via the server API.
@@ -58,13 +58,15 @@ type Monitor struct {
 	transformMetric func([]*blip.Metrics) error
 
 	// Core components
-	runMux  *sync.RWMutex
-	db      *sql.DB
-	dsn     string // redacted (no password)
-	promAPI *prom.API
-	lco     LevelCollector
-	pch     PlanChanger
-	hbw     *heartbeat.Writer
+	runMux     *sync.RWMutex
+	db         *sql.DB
+	dbProvider blip.DbProvider
+	dsn        string // redacted (no password)
+	promAPI    *prom.API
+	exporter   *Exporter
+	lco        LevelCollector
+	pch        PlanChanger
+	hbw        *heartbeat.Writer
 
 	// Control chans and sync
 	runLoopChan chan struct{} // Stop(): stop the monitor
@@ -88,7 +90,7 @@ type MonitorArgs struct {
 
 // NewMonitor creates a new Monitor with the given arguments. The caller must
 // call Boot then, if that does not return an error, Run to start monitoring
-// the MySQL instance.
+// the database target.
 func NewMonitor(args MonitorArgs) *Monitor {
 	retry := backoff.NewExponentialBackOff()
 	retry.MaxElapsedTime = 0
@@ -150,10 +152,8 @@ func (m *Monitor) Stop() error {
 	// Stop and wait for monitor subsystems
 	m.stop(false, "Stop")
 
-	// Everything should be stopped now, so close db connection
-	if m.db != nil {
-		m.db.Close()
-	}
+	// Everything should be stopped now, so close database resources.
+	m.closeDB()
 
 	event.Sendf(event.MONITOR_STOPPED, "%s", m.monitorId)
 	status.Monitor(m.monitorId, status.MONITOR, "stopped at %s", blip.FormatTime(time.Now()))
@@ -232,7 +232,7 @@ func (m *Monitor) runLoop() {
 // then runLoop() calls startup again to restart monitoring.
 //
 // startup is called only by runLoop, which guards (serializes) and monitors it.
-func (m *Monitor) startup() error {
+func (m *Monitor) startup() (err error) {
 	blip.Debug("%s: startup call", m.monitorId)
 	defer blip.Debug("%s: startup return", m.monitorId)
 
@@ -249,15 +249,22 @@ func (m *Monitor) startup() error {
 	// DB-plan loop
 	// //////////////////////////////////////////////////////////////////////
 
+	// Release database resources from an earlier failed startup or subsystem
+	// restart before creating the next monitor-owned connection set.
+	m.runMux.Lock()
+	m.closeDB()
+	m.runMux.Unlock()
+
 	// ----------------------------------------------------------------------
-	// Make DSN and *sql.DB. This does NOT connect to MySQL.
+	// Make DSN and *sql.DB. This does NOT connect to the database.
 	for {
 		status.Monitor(m.monitorId, status.MONITOR, "making DB/DSN (not connecting)")
-		db, dsnRedacted, err := m.dbMaker.Make(m.cfg)
+		dbProvider, db, dsnRedacted, err := m.makeDB()
 		m.setErr(err, false)
 		if err == nil { // success
 			m.runMux.Lock()
 			m.db = db
+			m.dbProvider = dbProvider
 			m.dsn = dsnRedacted
 			status.Monitor(m.monitorId, status.MONITOR_DSN, "%s", dsnRedacted)
 			m.runMux.Unlock()
@@ -273,7 +280,7 @@ func (m *Monitor) startup() error {
 	}
 
 	// ----------------------------------------------------------------------
-	// Load monitor plans, if any. This MIGHT connect to MySQL if the plan
+	// Load monitor plans, if any. This MIGHT connect to the database if the plan
 	// is stored in a table.
 	for {
 		status.Monitor(m.monitorId, status.MONITOR, "loading plans")
@@ -297,6 +304,11 @@ func (m *Monitor) startup() error {
 
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
+	defer func() {
+		if err != nil {
+			m.stop(false, "startup error")
+		}
+	}()
 
 	// ----------------------------------------------------------------------
 	// Heartbeat
@@ -307,17 +319,19 @@ func (m *Monitor) startup() error {
 	if m.cfg.Heartbeat.Freq != "" {
 		status.Monitor(m.monitorId, status.MONITOR, "starting heartbeat")
 		m.hbw = heartbeat.NewWriter(m.monitorId, m.db, m.cfg.Heartbeat)
+		hbw := m.hbw
+		runChan := m.runChan
 		m.wg.Add(1)
 		go func() {
-			defer m.stop(true, "heartbeat.Writer") // stop monitor subsystems
-			defer m.wg.Done()                      // notify stop()
-			defer func() {                         // catch panic in heartbeat.Writer
+			defer m.stopRun(runChan, "heartbeat.Writer") // stop monitor subsystems
+			defer m.wg.Done()                            // notify stop()
+			defer func() {                               // catch panic in heartbeat.Writer
 				if r := recover(); r != nil {
 					m.panic(r)
 				}
 			}()
 			doneChan := make(chan struct{}) // Monitor uses wg
-			m.hbw.Write(m.runChan, doneChan)
+			hbw.Write(runChan, doneChan)
 		}()
 	}
 
@@ -349,23 +363,26 @@ func (m *Monitor) startup() error {
 		}
 
 		// Run API to emulate an exporter, responding to GET /metrics
+		m.exporter = NewExporter(m.cfg.Exporter, promPlan, newEngineWithDBProvider(m.cfg, m.db, m.dbProvider))
 		m.promAPI = prom.NewAPI(
 			m.cfg.Exporter,
 			m.monitorId,
-			NewExporter(m.cfg.Exporter, promPlan, NewEngine(m.cfg, m.db)),
+			m.exporter,
 		)
+		promAPI := m.promAPI
+		runChan := m.runChan
 
 		m.wg.Add(1)
 		go func() {
 			defer status.RemoveComponent(m.monitorId, "exporter")
-			defer m.stop(true, "prom.API") // stop monitor subsystems
-			defer m.wg.Done()              // notify stop()
-			defer func() {                 // catch panic in exporter API
+			defer m.stopRun(runChan, "prom.API") // stop monitor subsystems
+			defer m.wg.Done()                    // notify stop()
+			defer func() {                       // catch panic in exporter API
 				if r := recover(); r != nil {
 					m.panic(r)
 				}
 			}()
-			err := m.promAPI.Run()
+			err := promAPI.Run()
 			if err == nil { // shutdown
 				blip.Debug("%s: prom api stopped", m.monitorId)
 				return
@@ -391,25 +408,27 @@ func (m *Monitor) startup() error {
 	// config.plans.change, then it will do this; if it's not enabled,
 	// we'll do it as the last startup step.
 	status.Monitor(m.monitorId, status.MONITOR, "starting level collector")
-	m.lco = NewLevelCollector(LevelCollectorArgs{
+	m.lco = newLevelCollectorWithDBProvider(LevelCollectorArgs{
 		Config:           m.cfg,
 		DB:               m.db,
 		PlanLoader:       m.planLoader,
 		Sinks:            m.sinks,
 		TransformMetrics: m.transformMetric,
-	})
+	}, m.dbProvider)
+	lco := m.lco
+	runChan := m.runChan
 
 	m.wg.Add(1)
 	go func() {
-		defer m.stop(true, "LCO") // stop monitor subsystems
-		defer m.wg.Done()         // notify stop()
-		defer func() {            // catch panic in LCO
+		defer m.stopRun(runChan, "LCO") // stop monitor subsystems
+		defer m.wg.Done()               // notify stop()
+		defer func() {                  // catch panic in LCO
 			if r := recover(); r != nil {
 				m.panic(r)
 			}
 		}()
 		doneChan := make(chan struct{}) // Monitor uses wg
-		m.lco.Run(m.runChan, doneChan)
+		lco.Run(runChan, doneChan)
 	}()
 
 	// ----------------------------------------------------------------------
@@ -427,18 +446,19 @@ func (m *Monitor) startup() error {
 			LCO:       m.lco,
 			HA:        m.ha,
 		})
+		pch := m.pch
 
 		m.wg.Add(1)
 		go func() {
-			defer m.stop(true, "PCH") // stop monitor subsystems
-			defer m.wg.Done()         // notify stop()
-			defer func() {            // catch panic in PCH
+			defer m.stopRun(runChan, "PCH") // stop monitor subsystems
+			defer m.wg.Done()               // notify stop()
+			defer func() {                  // catch panic in PCH
 				if r := recover(); r != nil {
 					m.panic(r)
 				}
 			}()
 			doneChan := make(chan struct{}) // Monitor uses wg
-			m.pch.Run(m.runChan, doneChan)  // start LCO indirectly
+			pch.Run(runChan, doneChan)      // start LCO indirectly
 		}()
 	} else {
 		// When the PCH is not enabled, we must init the state and plan,
@@ -454,6 +474,46 @@ func (m *Monitor) startup() error {
 
 	m.event.Sendf(event.MONITOR_STARTED, "%s", m.dsn)
 	return nil
+}
+
+func (m *Monitor) makeDB() (blip.DbProvider, *sql.DB, string, error) {
+	providerFactory, ok := m.dbMaker.(blip.DbProviderFactory)
+	if !ok {
+		db, dsn, err := m.dbMaker.Make(m.cfg)
+		return nil, db, dsn, err
+	}
+
+	provider, dsn, err := providerFactory.MakeProvider(m.cfg)
+	if err != nil {
+		if provider != nil {
+			provider.Close()
+		}
+		return nil, nil, "", err
+	}
+	if provider == nil {
+		return nil, nil, "", fmt.Errorf("database provider factory returned a nil provider")
+	}
+	db := provider.Primary()
+	if db == nil {
+		provider.Close()
+		return nil, nil, "", fmt.Errorf("database provider returned a nil primary connection")
+	}
+	return provider, db, dsn, nil
+}
+
+// closeDB releases the current monitor-owned database resources. The caller
+// must hold runMux.
+func (m *Monitor) closeDB() {
+	if m.dbProvider != nil {
+		m.dbProvider.Close()
+		m.dbProvider = nil
+		m.db = nil
+		return
+	}
+	if m.db != nil {
+		m.db.Close()
+		m.db = nil
+	}
 }
 
 // stop stops the monitor subsystems started in startup. It does not stop the
@@ -482,11 +542,34 @@ func (m *Monitor) stop(lock bool, caller string) {
 	// it's running an http.Server
 	if m.promAPI != nil {
 		m.promAPI.Stop()
+		m.promAPI = nil
 	}
 
 	// Wait for monitor subsystem goroutines to return
 	status.Monitor(m.monitorId, status.MONITOR, "stopping goroutines")
 	m.wg.Wait()
+	if m.exporter != nil {
+		m.exporter.Stop()
+		m.exporter = nil
+	}
+
+	// A subsystem failure restarts the whole monitor, including its database
+	// provider. Close the current provider only after every subsystem has
+	// stopped using its connections.
+	m.closeDB()
+}
+
+// stopRun stops a subsystem generation only if it is still current. A
+// subsystem from an earlier startup can finish after runLoop has installed a
+// new run channel; it must not stop that newer generation.
+func (m *Monitor) stopRun(runChan chan struct{}, caller string) {
+	m.runMux.Lock()
+	defer m.runMux.Unlock()
+	if m.runChan != runChan {
+		blip.Debug("%s: stop called by %s for obsolete run (noop)", m.monitorId, caller)
+		return
+	}
+	m.stop(false, caller)
 }
 
 func (m *Monitor) setErr(err error, isPanic bool) {

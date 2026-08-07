@@ -136,13 +136,23 @@ type CollectorFactory interface {
 	Make(domain string, args CollectorFactoryArgs) (Collector, error)
 }
 
+// CollectorFactoryWithDBProvider is an optional CollectorFactory capability
+// for database-specific collectors that need access to the monitor-owned
+// database provider. Factories that do not implement it retain the historical
+// Make behavior.
+type CollectorFactoryWithDBProvider interface {
+	CollectorFactory
+	MakeWithDBProvider(domain string, args CollectorFactoryArgs, provider DbProvider) (Collector, error)
+}
+
 // CollectorFactoryDatabaseTypes is an optional CollectorFactory capability
 // that identifies the database types supported by a domain. Factories that do
 // not implement this interface retain Blip's historical MySQL behavior.
 //
 // The domain argument allows one factory to serve domains with different
 // compatibility, such as MySQL collectors and database-neutral cloud metrics.
-// Implementations must return at least one database type.
+// Implementations must return at least one database type. Return
+// DatabaseTypeAny by itself for a database-neutral domain.
 type CollectorFactoryDatabaseTypes interface {
 	CollectorFactory
 	DatabaseTypes(domain string) []DatabaseType

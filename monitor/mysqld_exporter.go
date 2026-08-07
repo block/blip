@@ -107,3 +107,13 @@ func (e Exporter) Collect(ch chan<- prometheus.Metric) {
 		tr.Translate(vals, ch)
 	}
 }
+
+// Stop releases collector resources prepared by the exporter engine. The
+// monitor calls this only after the HTTP API has stopped accepting and serving
+// scrapes.
+func (e *Exporter) Stop() {
+	e.Lock()
+	defer e.Unlock()
+	e.engine.Stop()
+	e.prepared = false
+}

@@ -3,17 +3,48 @@
 package metrics_test
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/metrics"
-	"github.com/cashapp/blip/test/mock"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/metrics"
+	"github.com/cashapp/blip/v2/test/mock"
 )
+
+const externalType blip.DatabaseType = "test-database"
 
 type databaseTypesFactory struct {
 	mock.MetricFactory
 	databaseTypes func(string) []blip.DatabaseType
+}
+
+type providerFactory struct {
+	mock.MetricFactory
+	providerCalls int
+	provider      blip.DbProvider
+}
+
+func (f *providerFactory) MakeWithDBProvider(
+	domain string,
+	args blip.CollectorFactoryArgs,
+	provider blip.DbProvider,
+) (blip.Collector, error) {
+	f.providerCalls++
+	f.provider = provider
+	return f.MetricFactory.Make(domain, args)
+}
+
+type testProvider struct {
+	primary *sql.DB
+}
+
+func (p testProvider) Primary() *sql.DB {
+	return p.primary
+}
+
+func (testProvider) Close() error {
+	return nil
 }
 
 func (f databaseTypesFactory) DatabaseTypes(domain string) []blip.DatabaseType {
@@ -36,20 +67,20 @@ func TestRegisterDefaultsToMySQL(t *testing.T) {
 		t.Fatalf("Make(default mysql): %v", err)
 	}
 
-	err := metrics.ValidateDatabase(domain, blip.DatabaseTypePostgres)
-	if err == nil || !strings.Contains(err.Error(), `does not support database type "postgres" (supported: [mysql])`) {
-		t.Fatalf("ValidateDatabase(postgres) error = %v", err)
+	err := metrics.ValidateDatabase(domain, externalType)
+	if err == nil || !strings.Contains(err.Error(), `does not support database type "test-database" (supported: [mysql])`) {
+		t.Fatalf("ValidateDatabase(external) error = %v", err)
 	}
 }
 
 func TestRegisterUsesFactoryDatabaseTypes(t *testing.T) {
-	const domain = "test.postgres-only"
+	const domain = "test.external-only"
 	factory := databaseTypesFactory{
 		databaseTypes: func(gotDomain string) []blip.DatabaseType {
 			if gotDomain != domain {
 				t.Fatalf("DatabaseTypes domain = %q, expected %q", gotDomain, domain)
 			}
-			return []blip.DatabaseType{blip.DatabaseTypePostgres}
+			return []blip.DatabaseType{externalType}
 		},
 	}
 
@@ -58,17 +89,17 @@ func TestRegisterUsesFactoryDatabaseTypes(t *testing.T) {
 	}
 	t.Cleanup(func() { metrics.Remove(domain) })
 
-	if err := metrics.ValidateDatabase(domain, blip.DatabaseTypePostgres); err != nil {
-		t.Fatalf("ValidateDatabase(postgres): %v", err)
+	if err := metrics.ValidateDatabase(domain, externalType); err != nil {
+		t.Fatalf("ValidateDatabase(external): %v", err)
 	}
 	if _, err := metrics.Make(domain, blip.CollectorFactoryArgs{
-		Config: blip.ConfigMonitor{DatabaseType: blip.DatabaseTypePostgres},
+		Config: blip.ConfigMonitor{DatabaseType: externalType},
 	}); err != nil {
-		t.Fatalf("Make(postgres): %v", err)
+		t.Fatalf("Make(external): %v", err)
 	}
 
 	err := metrics.ValidateDatabase(domain, blip.DatabaseTypeMySQL)
-	if err == nil || !strings.Contains(err.Error(), `does not support database type "mysql" (supported: [postgres])`) {
+	if err == nil || !strings.Contains(err.Error(), `does not support database type "mysql" (supported: [test-database])`) {
 		t.Fatalf("ValidateDatabase(mysql) error = %v", err)
 	}
 	if _, err := metrics.Make(domain, blip.CollectorFactoryArgs{}); err == nil {
@@ -87,9 +118,9 @@ func TestRegisterSupportsMultipleDatabaseTypes(t *testing.T) {
 	factory := databaseTypesFactory{
 		databaseTypes: func(string) []blip.DatabaseType {
 			return []blip.DatabaseType{
-				blip.DatabaseTypePostgres,
+				externalType,
 				blip.DatabaseTypeMySQL,
-				blip.DatabaseTypePostgres,
+				externalType,
 			}
 		},
 	}
@@ -101,7 +132,7 @@ func TestRegisterSupportsMultipleDatabaseTypes(t *testing.T) {
 
 	for _, databaseType := range []blip.DatabaseType{
 		blip.DatabaseTypeMySQL,
-		blip.DatabaseTypePostgres,
+		externalType,
 	} {
 		if err := metrics.ValidateDatabase(domain, databaseType); err != nil {
 			t.Fatalf("ValidateDatabase(%s): %v", databaseType, err)
@@ -114,7 +145,7 @@ func TestRegisterSupportsMultipleDatabaseTypes(t *testing.T) {
 	}
 	if len(databaseTypes) != 2 ||
 		databaseTypes[0] != blip.DatabaseTypeMySQL ||
-		databaseTypes[1] != blip.DatabaseTypePostgres {
+		databaseTypes[1] != externalType {
 		t.Fatalf("SupportedDatabaseTypes = %v", databaseTypes)
 	}
 
@@ -134,9 +165,21 @@ func TestRegisterValidatesFactoryDatabaseTypes(t *testing.T) {
 			databaseTypes: nil,
 			errorContains: "supports no database types",
 		},
-		"invalid": {
-			databaseTypes: []blip.DatabaseType{"oracle"},
-			errorContains: `declares invalid database type "oracle"`,
+		"empty value": {
+			databaseTypes: []blip.DatabaseType{""},
+			errorContains: `declares invalid database type ""`,
+		},
+		"whitespace": {
+			databaseTypes: []blip.DatabaseType{" oracle "},
+			errorContains: `declares invalid database type " oracle "`,
+		},
+		"uppercase": {
+			databaseTypes: []blip.DatabaseType{"Oracle"},
+			errorContains: `declares invalid database type "Oracle"`,
+		},
+		"neutral with specific": {
+			databaseTypes: []blip.DatabaseType{blip.DatabaseTypeAny, "oracle"},
+			errorContains: "database-neutral compatibility with specific database types",
 		},
 	}
 	for name, tt := range tests {
@@ -178,17 +221,73 @@ func TestRegisterDuplicateDoesNotInspectFactoryDatabaseTypes(t *testing.T) {
 	}
 }
 
+func TestMakeWithDBProviderUsesOptionalFactoryCapability(t *testing.T) {
+	const domain = "test.db-provider"
+	makeCalls := 0
+	factory := &providerFactory{
+		MetricFactory: mock.MetricFactory{
+			MakeFunc: func(string, blip.CollectorFactoryArgs) (blip.Collector, error) {
+				makeCalls++
+				return mock.MetricsCollector{}, nil
+			},
+		},
+	}
+	if err := metrics.Register(domain, factory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(domain) })
+
+	provider := testProvider{primary: &sql.DB{}}
+	if _, err := metrics.MakeWithDBProvider(domain, blip.CollectorFactoryArgs{}, provider); err != nil {
+		t.Fatal(err)
+	}
+	if factory.providerCalls != 1 || makeCalls != 1 {
+		t.Fatalf("factory calls: provider=%d Make=%d, expected 1 and 1",
+			factory.providerCalls, makeCalls)
+	}
+	if factory.provider != provider {
+		t.Fatalf("factory provider = %T %p, expected %T %p",
+			factory.provider, factory.provider, provider, provider)
+	}
+}
+
+func TestMakePreservesHistoricalFactoryPath(t *testing.T) {
+	const domain = "test.db-provider-legacy-make"
+	makeCalls := 0
+	factory := &providerFactory{
+		MetricFactory: mock.MetricFactory{
+			MakeFunc: func(string, blip.CollectorFactoryArgs) (blip.Collector, error) {
+				makeCalls++
+				return mock.MetricsCollector{}, nil
+			},
+		},
+	}
+	if err := metrics.Register(domain, factory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(domain) })
+
+	if _, err := metrics.Make(domain, blip.CollectorFactoryArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if factory.providerCalls != 0 || makeCalls != 1 {
+		t.Fatalf("factory calls: provider=%d Make=%d, expected 0 and 1",
+			factory.providerCalls, makeCalls)
+	}
+}
+
 func TestBuiltInCollectorDatabaseCompatibility(t *testing.T) {
 	if err := metrics.ValidateDatabase("status.global", blip.DatabaseTypeMySQL); err != nil {
 		t.Fatalf("status.global with MySQL: %v", err)
 	}
-	if err := metrics.ValidateDatabase("status.global", blip.DatabaseTypePostgres); err == nil {
-		t.Fatal("status.global supports PostgreSQL")
+	if err := metrics.ValidateDatabase("status.global", externalType); err == nil {
+		t.Fatal("status.global supports an external database")
 	}
 
 	for _, databaseType := range []blip.DatabaseType{
 		blip.DatabaseTypeMySQL,
-		blip.DatabaseTypePostgres,
+		externalType,
+		blip.DatabaseType("future-rds-engine"),
 	} {
 		if err := metrics.ValidateDatabase("aws.rds", databaseType); err != nil {
 			t.Fatalf("aws.rds with %s: %v", databaseType, err)

@@ -36,8 +36,9 @@ func NewFactory(awsConfig blip.AWSConfigFactory, passwordSecretParser blip.Passw
 // Dynamic returns the first configured shared reloadable source in Blip's
 // established precedence order: IAM, Secrets Manager, then password file. The
 // boolean reports whether a source was selected. Engine-specific factories can
-// insert their own sources before falling back to Static.
-func (f Factory) Dynamic(cfg blip.ConfigMonitor) (Func, bool, error) {
+// insert their own sources before falling back to Static. defaultPort is used
+// only when signing an IAM token for a hostname without an explicit port.
+func (f Factory) Dynamic(cfg blip.ConfigMonitor, defaultPort string) (Func, bool, error) {
 	if blip.True(cfg.AWS.IAMAuth) {
 		blip.Debug("%s: AWS IAM auth token password", cfg.MonitorId)
 		if f.awsConfig == nil {
@@ -47,7 +48,10 @@ func (f Factory) Dynamic(cfg blip.ConfigMonitor) (Func, bool, error) {
 		if err != nil {
 			return nil, true, err
 		}
-		token := blipaws.NewAuthToken(cfg.Username, cfg.Hostname, awscfg)
+		if defaultPort == "" {
+			return nil, true, fmt.Errorf("AWS IAM authentication requires a database default port")
+		}
+		token := blipaws.NewAuthTokenWithDefaultPort(cfg.Username, cfg.Hostname, defaultPort, awscfg)
 		return func(ctx context.Context) (blip.DbCredentials, error) {
 			password, err := token.Password(ctx)
 			if err != nil {

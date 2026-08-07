@@ -275,7 +275,7 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 // credentials are fetched via a reload func, even a static credential specified
 // in the Blip config file.
 func (f factory) Credentials(cfg blip.ConfigMonitor) (CredentialFunc, error) {
-	credentialFunc, selected, err := credentials.NewFactory(f.awsConfig, f.passwordSecretParser).Dynamic(cfg)
+	credentialFunc, selected, err := credentials.NewFactory(f.awsConfig, f.passwordSecretParser).Dynamic(cfg, "3306")
 	if err != nil || selected {
 		return credentialFunc, err
 	}

@@ -80,9 +80,7 @@ func normalizeDatabaseTypes(domain string, databaseTypes []blip.DatabaseType) ([
 	seen := map[blip.DatabaseType]bool{}
 	normalized := make([]blip.DatabaseType, 0, len(databaseTypes))
 	for _, databaseType := range databaseTypes {
-		switch databaseType {
-		case blip.DatabaseTypeMySQL, blip.DatabaseTypePostgres:
-		default:
+		if databaseType != blip.DatabaseTypeAny && !blip.ValidDatabaseType(databaseType) {
 			return nil, fmt.Errorf("collector %s declares invalid database type %q", domain, databaseType)
 		}
 		if seen[databaseType] {
@@ -90,6 +88,9 @@ func normalizeDatabaseTypes(domain string, databaseTypes []blip.DatabaseType) ([
 		}
 		seen[databaseType] = true
 		normalized = append(normalized, databaseType)
+	}
+	if seen[blip.DatabaseTypeAny] && len(normalized) != 1 {
+		return nil, fmt.Errorf("collector %s declares database-neutral compatibility with specific database types", domain)
 	}
 	sort.Slice(normalized, func(i, j int) bool {
 		return normalized[i] < normalized[j]
@@ -155,7 +156,7 @@ func validateDatabase(domain string, databaseType blip.DatabaseType) error {
 		return fmt.Errorf("invalid domain: %s (no factory registered)", domain)
 	}
 	for _, supportedType := range registered.databaseTypes {
-		if supportedType == databaseType {
+		if supportedType == blip.DatabaseTypeAny || supportedType == databaseType {
 			return nil
 		}
 	}
@@ -167,6 +168,17 @@ func validateDatabase(domain string, databaseType blip.DatabaseType) error {
 //
 // See types in the blip package for more details.
 func Make(domain string, args blip.CollectorFactoryArgs) (blip.Collector, error) {
+	return makeWithDBProvider(domain, args, nil)
+}
+
+// MakeWithDBProvider makes a collector with an optional monitor-owned database
+// provider. Registered factories without the optional provider capability
+// continue through their historical Make method.
+func MakeWithDBProvider(domain string, args blip.CollectorFactoryArgs, provider blip.DbProvider) (blip.Collector, error) {
+	return makeWithDBProvider(domain, args, provider)
+}
+
+func makeWithDBProvider(domain string, args blip.CollectorFactoryArgs, provider blip.DbProvider) (blip.Collector, error) {
 	r.Lock()
 	defer r.Unlock()
 	registered, ok := r.factory[domain]
@@ -179,6 +191,11 @@ func Make(domain string, args blip.CollectorFactoryArgs) (blip.Collector, error)
 	if !args.Validate {
 		if err := validateDatabase(domain, args.Config.EffectiveDatabaseType()); err != nil {
 			return nil, err
+		}
+	}
+	if provider != nil {
+		if providerFactory, ok := registered.factory.(blip.CollectorFactoryWithDBProvider); ok {
+			return providerFactory.MakeWithDBProvider(domain, args, provider)
 		}
 	}
 	return registered.factory.Make(domain, args)
@@ -345,10 +362,7 @@ func InitFactory(factories blip.Factories) {
 
 func (f *factory) DatabaseTypes(domain string) []blip.DatabaseType {
 	if domain == awsrds.DOMAIN {
-		return []blip.DatabaseType{
-			blip.DatabaseTypeMySQL,
-			blip.DatabaseTypePostgres,
-		}
+		return []blip.DatabaseType{blip.DatabaseTypeAny}
 	}
 	return []blip.DatabaseType{blip.DatabaseTypeMySQL}
 }

@@ -151,7 +151,8 @@ type CollectorFactoryWithDBProvider interface {
 //
 // The domain argument allows one factory to serve domains with different
 // compatibility, such as MySQL collectors and database-neutral cloud metrics.
-// Implementations must return at least one database type.
+// Implementations must return at least one database type. Return
+// DatabaseTypeAny by itself for a database-neutral domain.
 type CollectorFactoryDatabaseTypes interface {
 	CollectorFactory
 	DatabaseTypes(domain string) []DatabaseType

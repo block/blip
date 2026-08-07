@@ -116,14 +116,14 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 		}
 	}()
 
-	// Connect to MySQL. DO NOT loop and retry; try once and return on error
+	// Connect to the database. DO NOT loop and retry; try once and return on error
 	// to let the caller (a LevelCollector.changePlan goroutine) retry with backoff.
-	status.Monitor(e.monitorId, status.ENGINE_PREPARE, "%s: connect to MySQL", plan.Name)
+	status.Monitor(e.monitorId, status.ENGINE_PREPARE, "%s: connect to database", plan.Name)
 	dbctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	err := e.db.PingContext(dbctx)
 	cancel()
 	if err != nil {
-		lerr = fmt.Errorf("while connecting to MySQL: %s", err)
+		lerr = fmt.Errorf("while connecting to database: %s", err)
 		return lerr
 	}
 

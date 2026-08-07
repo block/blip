@@ -5,8 +5,8 @@ title: "Changing"
 Plan changing makes Blip change plans while running (without restarting) based on the state of MySQL:
 
 {{< hint type=note >}}
-Plan changing is MySQL-specific. PostgreSQL monitors do not inherit global
-plan-changing defaults and reject monitor-level plan-changing configuration.
+Plan changing is MySQL-specific. External database monitors do not inherit
+global plan-changing defaults and reject monitor-level plan-changing configuration.
 {{< /hint >}}
 
 |State|Connected to MySQL|Collecting Metrics|Description|

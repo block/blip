@@ -80,9 +80,7 @@ func normalizeDatabaseTypes(domain string, databaseTypes []blip.DatabaseType) ([
 	seen := map[blip.DatabaseType]bool{}
 	normalized := make([]blip.DatabaseType, 0, len(databaseTypes))
 	for _, databaseType := range databaseTypes {
-		switch databaseType {
-		case blip.DatabaseTypeMySQL, blip.DatabaseTypePostgres:
-		default:
+		if databaseType != blip.DatabaseTypeAny && !blip.ValidDatabaseType(databaseType) {
 			return nil, fmt.Errorf("collector %s declares invalid database type %q", domain, databaseType)
 		}
 		if seen[databaseType] {
@@ -90,6 +88,9 @@ func normalizeDatabaseTypes(domain string, databaseTypes []blip.DatabaseType) ([
 		}
 		seen[databaseType] = true
 		normalized = append(normalized, databaseType)
+	}
+	if seen[blip.DatabaseTypeAny] && len(normalized) != 1 {
+		return nil, fmt.Errorf("collector %s declares database-neutral compatibility with specific database types", domain)
 	}
 	sort.Slice(normalized, func(i, j int) bool {
 		return normalized[i] < normalized[j]
@@ -155,7 +156,7 @@ func validateDatabase(domain string, databaseType blip.DatabaseType) error {
 		return fmt.Errorf("invalid domain: %s (no factory registered)", domain)
 	}
 	for _, supportedType := range registered.databaseTypes {
-		if supportedType == databaseType {
+		if supportedType == blip.DatabaseTypeAny || supportedType == databaseType {
 			return nil
 		}
 	}
@@ -361,10 +362,7 @@ func InitFactory(factories blip.Factories) {
 
 func (f *factory) DatabaseTypes(domain string) []blip.DatabaseType {
 	if domain == awsrds.DOMAIN {
-		return []blip.DatabaseType{
-			blip.DatabaseTypeMySQL,
-			blip.DatabaseTypePostgres,
-		}
+		return []blip.DatabaseType{blip.DatabaseTypeAny}
 	}
 	return []blip.DatabaseType{blip.DatabaseTypeMySQL}
 }

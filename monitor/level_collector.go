@@ -23,12 +23,12 @@ import (
 //
 // The term "collector" is a little misleading because the LCO doesn't collect
 // metrics, but it is the first step in the metrics collection process, which
-// looks roughly like: LCO -> Engine -> metric collectors -> MySQL.
+// looks roughly like: LCO -> Engine -> metric collectors -> database.
 // In Run, the LCO checks every 1s for the highest level in the plan to collect.
 // For example, after 5s it'll collect levels with a frequency divisible by 5s.
 // See https://block.github.io/blip/plans/file/.
 //
-// Metrics from MySQL flow back to the LCO as blip.Metrics, which the LCO
+// Metrics from the database flow back to the LCO as blip.Metrics, which the LCO
 // passes to blip.Plugin.TransformMetrics if specified, then to all sinks
 // specified for the monitor.
 type LevelCollector interface {
@@ -370,7 +370,7 @@ func (c *lco) ChangePlan(newState, newPlanName string) error {
 
 // changePlan is a gorountine run by ChangePlan It's potentially long-running
 // because it waits for Engine.Prepare. If that function returns an error
-// (e.g. MySQL is offline), then this function retires forever, or until canceled
+// (e.g. the database is offline), then this function retries forever, or until canceled
 // by either another call to ChangePlan or Run is stopped (LCO is terminated).
 //
 // Never all this function directly; it's only called via ChangePlan, which
@@ -454,9 +454,9 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 		c.stateMux.Unlock() // -- X unlock --
 	}
 
-	// Try forever, or until context is cancelled, because it could be that MySQL is
+	// Try forever, or until context is cancelled, because it could be that the database is
 	// temporarily offline. In the real world, this is not uncommon: Blip might be
-	// started before MySQL, for example. We're running in a goroutine from ChangePlan
+	// started before the database, for example. We're running in a goroutine from ChangePlan
 	// that already returned to its caller, so we're not blocking anything here.
 	// More importantly, as documented in several place: this is _the code_ that
 	// all other code relies on to try "forever" because a plan must be prepared

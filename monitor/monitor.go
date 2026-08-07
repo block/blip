@@ -1,7 +1,7 @@
 // Copyright 2024 Block, Inc.
 
 // Package monitor provides core Blip components that, together, monitor one
-// MySQL instance. Most monitoring logic happens in the package, but package
+// database target. Most monitoring logic happens in the package, but package
 // metrics is closely related: this latter actually collect metrics, but it
 // is driven by this package. Other Blip packages are mostly set up and support
 // of monitors.
@@ -25,7 +25,7 @@ import (
 	"github.com/cashapp/blip/status"
 )
 
-// Monitor monitors one MySQL instance. The monitor is a high-level component
+// Monitor monitors one database target. The monitor is a high-level component
 // that runs (and keeps running) four monitor subsystems:
 //   - Plan changer (PCH)
 //   - Level collector (LCO)
@@ -37,7 +37,7 @@ import (
 // If any subsystem crashes (returns for any reason or panics), the monitor
 // stops and restarts all subsystems. The monitor doesn't stop until Stop is
 // called. Consequently, if a monitor is not configured correctly (for example,
-// it can't connect to MySQL), it tries and reports every forever.
+// it can't connect to the database), it tries and reports every forever.
 //
 // Monitors are loaded, created, and initially started only by the MonitorLoader.
 // A monitor can be stopped and started (again) via the server API.
@@ -90,7 +90,7 @@ type MonitorArgs struct {
 
 // NewMonitor creates a new Monitor with the given arguments. The caller must
 // call Boot then, if that does not return an error, Run to start monitoring
-// the MySQL instance.
+// the database target.
 func NewMonitor(args MonitorArgs) *Monitor {
 	retry := backoff.NewExponentialBackOff()
 	retry.MaxElapsedTime = 0
@@ -256,7 +256,7 @@ func (m *Monitor) startup() (err error) {
 	m.runMux.Unlock()
 
 	// ----------------------------------------------------------------------
-	// Make DSN and *sql.DB. This does NOT connect to MySQL.
+	// Make DSN and *sql.DB. This does NOT connect to the database.
 	for {
 		status.Monitor(m.monitorId, status.MONITOR, "making DB/DSN (not connecting)")
 		dbProvider, db, dsnRedacted, err := m.makeDB()
@@ -280,7 +280,7 @@ func (m *Monitor) startup() (err error) {
 	}
 
 	// ----------------------------------------------------------------------
-	// Load monitor plans, if any. This MIGHT connect to MySQL if the plan
+	// Load monitor plans, if any. This MIGHT connect to the database if the plan
 	// is stored in a table.
 	for {
 		status.Monitor(m.monitorId, status.MONITOR, "loading plans")

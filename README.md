@@ -19,4 +19,4 @@ Blip was created by engineers at [Cash App](https://cash.app) and [Square](https
 
 :link: [Contributions welcome](https://github.com/cashapp/blip/blob/main/CONTRIBUTING.md)
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/cashapp/blip.svg)](https://pkg.go.dev/github.com/cashapp/blip)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cashapp/blip/v2.svg)](https://pkg.go.dev/github.com/cashapp/blip/v2)

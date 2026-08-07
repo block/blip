@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadogV2"
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/test/mock"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/test/mock"
 	"github.com/go-test/deep"
 )
 

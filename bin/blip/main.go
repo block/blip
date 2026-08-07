@@ -5,7 +5,7 @@ package main
 import (
 	"log"
 
-	"github.com/cashapp/blip/server"
+	"github.com/cashapp/blip/v2/server"
 )
 
 func main() {

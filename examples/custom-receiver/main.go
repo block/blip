@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/server"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/server"
 )
 
 // JSON implements a custom event.Receiver that converts Blip events to JSON

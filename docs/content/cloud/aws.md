@@ -37,7 +37,7 @@ config.LoadDefaultConfig(ctx, config.WithRegion("..."))
 
 Section [Region](#region) above explains how the region is auto-detected or configured.
 
-Use the [`blip.AWSConfigFactory`](https://pkg.go.dev/github.com/cashapp/blip#AWSConfigFactory) to load a custome AWS configuration (which includes the credentials).
+Use the [`blip.AWSConfigFactory`](https://pkg.go.dev/github.com/cashapp/blip/v2#AWSConfigFactory) to load a custome AWS configuration (which includes the credentials).
 See [Develop / Intergration API]({{< ref "/develop/integration-api" >}}) for more information.
 
 ## Authentication
@@ -129,7 +129,7 @@ It works with Blip, but Blip ignores the connection fields like `host` and `port
 {{< /hint >}}
 
 If you embed Blip and use a different secret payload shape, set the
-[`blip.Plugins.ParsePasswordSecret`](https://pkg.go.dev/github.com/cashapp/blip#Plugins)
+[`blip.Plugins.ParsePasswordSecret`](https://pkg.go.dev/github.com/cashapp/blip/v2#Plugins)
 callback before calling `Server.Boot`.
 The callback receives one raw payload: `SecretString` bytes when present, otherwise `SecretBinary` bytes.
 It should set the password and, if needed, username on the credentials value passed to it.

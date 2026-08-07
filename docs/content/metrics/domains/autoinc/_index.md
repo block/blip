@@ -68,4 +68,4 @@ None.
 
 |Blip Version|Change|
 |------------|------|
-|v2.0.0|Domain added|
+|v2.0.1|Domain added|

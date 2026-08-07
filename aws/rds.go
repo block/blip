@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 type RDSClient interface {

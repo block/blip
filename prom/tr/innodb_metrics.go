@@ -7,7 +7,7 @@ import (
 
 	prom "github.com/prometheus/client_golang/prometheus"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 type InnoDBMetrics struct {

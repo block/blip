@@ -3,7 +3,7 @@
 package mock
 
 import (
-	"github.com/cashapp/blip/event"
+	"github.com/cashapp/blip/v2/event"
 )
 
 type EventReceiver struct {

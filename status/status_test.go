@@ -5,7 +5,7 @@ package status_test
 import (
 	"testing"
 
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2/status"
 )
 
 func TestStatus(t *testing.T) {

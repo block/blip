@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 // SortedLevel represents a sorted level created by sortedLevels below.

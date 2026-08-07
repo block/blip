@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/metrics"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/metrics"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // CollectParallel sets how many domains to collect in parallel. Currently, this

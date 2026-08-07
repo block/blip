@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/sqlutil"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/sqlutil"
+	"github.com/cashapp/blip/v2/status"
 )
 
 const BLIP_TABLE_DDL = `CREATE TABLE IF NOT EXISTS heartbeat (

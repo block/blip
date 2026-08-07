@@ -15,11 +15,11 @@ import (
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/metrics"
-	default_plan "github.com/cashapp/blip/plan/default"
-	"github.com/cashapp/blip/sqlutil"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/metrics"
+	default_plan "github.com/cashapp/blip/v2/plan/default"
+	"github.com/cashapp/blip/v2/sqlutil"
 )
 
 // Meta is a blip.Plan plus metadata.

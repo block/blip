@@ -17,8 +17,8 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/aws"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/aws"
 )
 
 // rdsAddr matches Amazon RDS hostnames with optional :port suffix.

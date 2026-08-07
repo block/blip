@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 // The Delta sink calculates DELTER_COUNTER metrics from CUMULATIVE_COUNTER metrics. It acts as a transform,

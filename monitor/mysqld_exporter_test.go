@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/monitor"
-	"github.com/cashapp/blip/plan/default"
-	"github.com/cashapp/blip/test"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/monitor"
+	"github.com/cashapp/blip/v2/plan/default"
+	"github.com/cashapp/blip/v2/test"
 )
 
 func TestProm(t *testing.T) {

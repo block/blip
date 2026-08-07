@@ -16,11 +16,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	om "github.com/cashapp/blip/openmetrics"
-	"github.com/cashapp/blip/prom"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	om "github.com/cashapp/blip/v2/openmetrics"
+	"github.com/cashapp/blip/v2/prom"
+	"github.com/cashapp/blip/v2/status"
 )
 
 const DEFAULT_CHRONOSPHERE_URL = "http://127.0.0.1:3030/openmetrics/write"

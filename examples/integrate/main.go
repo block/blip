@@ -6,10 +6,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/heartbeat"
-	"github.com/cashapp/blip/metrics"
-	"github.com/cashapp/blip/server"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/heartbeat"
+	"github.com/cashapp/blip/v2/metrics"
+	"github.com/cashapp/blip/v2/server"
 )
 
 func main() {

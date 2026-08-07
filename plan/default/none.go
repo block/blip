@@ -2,7 +2,7 @@
 
 package default_plan
 
-import "github.com/cashapp/blip"
+import "github.com/cashapp/blip/v2"
 
 // None returns an empty plan usual for standby instances of Blip.
 func None() blip.Plan {

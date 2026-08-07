@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/sqlutil"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/sqlutil"
 )
 
 // Table collects buffer pool data from information_schema.innodb_buffer_pool_stats.

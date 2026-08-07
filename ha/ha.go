@@ -5,7 +5,7 @@ package ha
 import (
 	"sync"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 type Manager interface {

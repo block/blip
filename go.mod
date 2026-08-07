@@ -1,4 +1,4 @@
-module github.com/cashapp/blip
+module github.com/cashapp/blip/v2
 
 go 1.24
 

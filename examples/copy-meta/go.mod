@@ -1,10 +1,10 @@
 module blip_plugin
 
-go 1.22.2
+go 1.24
 
-replace github.com/cashapp/blip => ../../
+replace github.com/cashapp/blip/v2 => ../../
 
-require github.com/cashapp/blip v0.0.0-00010101000000-000000000000
+require github.com/cashapp/blip/v2 v2.0.1
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.20.3 // indirect

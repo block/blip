@@ -3,7 +3,7 @@ package blip_plugin
 import (
 	"fmt"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 // Verify that CopyMeta is a valid blip.Plugins.TransformMetrics callback.

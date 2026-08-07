@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/cashapp/blip/metrics/percona"
+	"github.com/cashapp/blip/v2/metrics/percona"
 )
 
 func TestPercentile(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/prom/tr"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/prom/tr"
 )
 
 type DomainTranslator interface {

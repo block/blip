@@ -20,7 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-const VERSION = "2.0.0"
+const VERSION = "2.0.1"
 
 var SHA = ""
 

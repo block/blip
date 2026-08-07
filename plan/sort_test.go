@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/plan"
-	defaultPlan "github.com/cashapp/blip/plan/default"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/plan"
+	defaultPlan "github.com/cashapp/blip/v2/plan/default"
 )
 
 // --------------------------------------------------------------------------

@@ -23,11 +23,12 @@ As described in the [Blip versioning guidelines](https://github.com/block/blip/b
 
 To upgrade an integration:
 
-1. Replace `dbconn.Credentials` with `blip.DbCredentials` and update any `dbconn.CredentialFunc` implementations.
-2. Accept the new variadic options argument when storing or wrapping `dbconn.NewConnFactory`; ordinary two-argument calls continue to compile.
-3. Capture the parameter slice returned by `DataSizeQuery`, `TableSizeQuery`, and `TableIoWaitQuery`, and pass it to the database query call.
-4. Replace `aws.Secret.Password` calls with `GetSecret` for the default JSON object or `GetSecretPayload` plus a password secret parser for custom payloads.
-5. Stop comparing `heartbeat.BlipReader` values directly; compare the relevant state exposed by the reader instead.
+1. Update imports from `github.com/cashapp/blip/...` to `github.com/cashapp/blip/v2/...` and require `github.com/cashapp/blip/v2 v2.0.1` or later.
+2. Replace `dbconn.Credentials` with `blip.DbCredentials` and update any `dbconn.CredentialFunc` implementations.
+3. Accept the new variadic options argument when storing or wrapping `dbconn.NewConnFactory`; ordinary two-argument calls continue to compile.
+4. Capture the parameter slice returned by `DataSizeQuery`, `TableSizeQuery`, and `TableIoWaitQuery`, and pass it to the database query call.
+5. Replace `aws.Secret.Password` calls with `GetSecret` for the default JSON object or `GetSecretPayload` plus a password secret parser for custom payloads.
+6. Stop comparing `heartbeat.BlipReader` values directly; compare the relevant state exposed by the reader instead.
 
 ### Runtime changes
 
@@ -35,8 +36,11 @@ AWS Secrets Manager `password-secret` authentication now uses the secret's optio
 
 Default sink HTTP clients now have a 10-second whole-request timeout plus bounded connection and response-header timeouts. Custom HTTP client factories are unchanged.
 
-### v2.0.0 (7 Aug 2026)
+### v2.0.1 (7 Aug 2026)
 
+Version v2.0.0 was withdrawn before release completion because its module path lacked the `/v2` suffix required by Go modules. v2.0.1 is the first usable v2 release.
+
+* Added the required `/v2` module and import path for the v2 series.
 * Added the `autoinc` domain for auto-increment column utilization.
 * Added the `error.account`, `error.global`, `error.host`, `error.thread`, and `error.user` domains.
 * Added the `innodb.buffer-pool` domain.

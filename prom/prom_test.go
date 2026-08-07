@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/prom"
-	"github.com/cashapp/blip/test"
-	"github.com/cashapp/blip/test/mock"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/prom"
+	"github.com/cashapp/blip/v2/test"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 func TestAPI(t *testing.T) {

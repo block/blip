@@ -5,7 +5,7 @@ package mock
 import (
 	"context"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 type Sink struct {

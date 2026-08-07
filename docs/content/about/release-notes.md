@@ -2,6 +2,57 @@
 weight: 0
 ---
 
+## v2.0
+
+This is a new major version. It added new metric domains, runtime debug controls, extensible AWS Secrets Manager parsing, and a more resilient Datadog delivery path.
+
+As described in the [Blip versioning guidelines](https://github.com/block/blip/blob/main/CONTRIBUTING.md#versioning), this series is not entirely backwards-compatible with v1.2. Integrations that use the affected exported APIs must be updated before upgrading.
+
+### Integration API changes
+
+|Component|v1.2|v2.0|
+|---------|----|----|
+|AWS secret password helper|`aws.Secret.Password(context.Context) (string, error)`|Removed; use `GetSecret` or `GetSecretPayload`|
+|Database credential type|`dbconn.Credentials`|`blip.DbCredentials`|
+|Database credential callback|Returned `dbconn.Credentials`|Returns `blip.DbCredentials`|
+|Default connection factory|`NewConnFactory(awsConfig, modifyDB)`|`NewConnFactory(awsConfig, modifyDB, ...ConnFactoryOption)`|
+|Database-size query helper|Returned `(string, error)`|Returns `(string, []interface{}, error)`|
+|Table-size query helper|Returned `(string, error)`|Returns `(string, []interface{}, error)`|
+|Table-I/O query helper|Returned `string`|Returns `(string, []interface{})`|
+|`heartbeat.BlipReader` values|Comparable|Not comparable|
+
+To upgrade an integration:
+
+1. Replace `dbconn.Credentials` with `blip.DbCredentials` and update any `dbconn.CredentialFunc` implementations.
+2. Accept the new variadic options argument when storing or wrapping `dbconn.NewConnFactory`; ordinary two-argument calls continue to compile.
+3. Capture the parameter slice returned by `DataSizeQuery`, `TableSizeQuery`, and `TableIoWaitQuery`, and pass it to the database query call.
+4. Replace `aws.Secret.Password` calls with `GetSecret` for the default JSON object or `GetSecretPayload` plus a password secret parser for custom payloads.
+5. Stop comparing `heartbeat.BlipReader` values directly; compare the relevant state exposed by the reader instead.
+
+### Runtime changes
+
+AWS Secrets Manager `password-secret` authentication now uses the secret's optional string `username` value instead of always using the configured monitor username. Remove `username` from the secret to retain the v1.2 behavior.
+
+Default sink HTTP clients now have a 10-second whole-request timeout plus bounded connection and response-header timeouts. Custom HTTP client factories are unchanged.
+
+### v2.0.0 (7 Aug 2026)
+
+* Added the `autoinc` domain for auto-increment column utilization.
+* Added the `error.account`, `error.global`, `error.host`, `error.thread`, and `error.user` domains.
+* Added the `innodb.buffer-pool` domain.
+* Added runtime debug toggling through `GET /debug` and `SIGUSR1`.
+* Added customizable parsing of AWS Secrets Manager `SecretString` and `SecretBinary` payloads.
+* Added bounded and checkpointed Datadog payload submission to avoid oversized requests and resume partially acknowledged batches.
+* Prevented sink requests from blocking metric delivery indefinitely.
+* Preserved complete metric metadata and isolated counter state in the delta sink.
+* Redacted database, sink, and authenticated proxy credentials from debug logs.
+* Fixed query construction to use driver parameter interpolation across collectors and heartbeats.
+* Fixed nondeterministic `query.response-time` bucket selection and added detailed latency diagnostics.
+* Fixed a shutdown panic in signal handling.
+* Updated the test matrix from MySQL 5.7 to MySQL 8.4 and refreshed dependencies.
+
+---
+
 ## v1.2
 
 This is a new series (new minor version).

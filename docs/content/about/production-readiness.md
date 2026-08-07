@@ -17,16 +17,23 @@ Stable
 
 Feature readiness is documented here to help you make informed decisions about monitoring your databases with Blip.
 
-## v1.x
+## v2.x
 
-Blip v1.x is <span class="ga">production</span> ready.
+Blip v2.x is Stable. Existing production-ready components retain their readiness; collectors introduced in v2.0 are marked New.
 
 ### Metric Collectors
 
 |Domain|Readiness|
 |-------|------|
+|[autoinc]({{< ref "metrics/domains/autoinc/" >}})|New|
 |[aws.rds]({{< ref "metrics/domains/aws.rds/" >}})|<span class="ga">Production</span>|
+|[error.account]({{< ref "metrics/domains/error.account/" >}})|New|
+|[error.global]({{< ref "metrics/domains/error.global/" >}})|New|
+|[error.host]({{< ref "metrics/domains/error.host/" >}})|New|
+|[error.thread]({{< ref "metrics/domains/error.thread/" >}})|New|
+|[error.user]({{< ref "metrics/domains/error.user/" >}})|New|
 |[innodb]({{< ref "metrics/domains/innodb/" >}})|<span class="ga">Production</span>|
+|[innodb.buffer-pool]({{< ref "metrics/domains/innodb.buffer-pool/" >}})|New|
 |[repl]({{< ref "metrics/domains/repl" >}})|<span class="ga">Production</span>|
 |[repl.lag]({{< ref "metrics/domains/repl.lag/" >}})|<span class="ga">Production</span>|
 |[size.binlog]({{< ref "metrics/domains/size.binlog/" >}})|<span class="ga">Production</span>|

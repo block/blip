@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 func TestTimeLimit(t *testing.T) {

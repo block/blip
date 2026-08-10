@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/heartbeat"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/heartbeat"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/cashapp/blip/sqlutil"
+	"github.com/cashapp/blip/v2/sqlutil"
 )
 
 func TestParsePercentileStr(t *testing.T) {

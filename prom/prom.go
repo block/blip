@@ -8,8 +8,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // Exporter emulates a Prometheus mysqld_exporter.

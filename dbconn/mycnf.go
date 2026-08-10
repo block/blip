@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-ini/ini"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 // ParseMyCnf parses a MySQL my.cnf file. It only reads the "[client]" section,

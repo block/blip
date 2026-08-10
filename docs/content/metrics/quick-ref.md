@@ -12,18 +12,18 @@ The rest are reserved for future use.
 |access.index|Index access statistics (`sys.schema_index_statistics`)||
 |access.table|Table access statistics (`sys.schema_table_statistics`)||
 |aria|MariaDB Aria storage engine||
-|[`autoinc`](domains#autoinc)|Auto-increment column utilization|v2.0.0|
+|[`autoinc`](domains#autoinc)|Auto-increment column utilization|v2.0.1|
 |aws|Amazon Web Services||
 |[`aws.rds`](domains#awsrds)|[Amazon RDS metrics](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/monitoring-cloudwatch.html#rds-metrics)|v1.0.0|
 |aws.aurora|Amazon Aurora||
 |azure|Microsoft Azure||
 |error|MySQL, client, and query errors||
 |error.client|Client errors||
-|[error.account](domains#error.account)|Error counts and rates by account [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.0|
-|[error.global](domains#error.global)|Global error counts and rates [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.0|
-|[error.host](domains#error.host)|Error counts and rates by host [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.0|
-|[error.thread](domains#error.thread)|Error counts and rates by thread [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.0|
-|[error.user](domains#error.user)|Error counts and rates by user [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.0|
+|[error.account](domains#error.account)|Error counts and rates by account [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.1|
+|[error.global](domains#error.global)|Global error counts and rates [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.1|
+|[error.host](domains#error.host)|Error counts and rates by host [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.1|
+|[error.thread](domains#error.thread)|Error counts and rates by thread [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.1|
+|[error.user](domains#error.user)|Error counts and rates by user [`Error Summary Tables`](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-error-summary-tables.html)|v2.0.1|
 |error.query|Query errors||
 |error.repl|Replication errors||
 |event|[MySQL Event Scheduler](https://dev.mysql.com/doc/refman/8.0/en/event-scheduler.html)||
@@ -33,7 +33,7 @@ The rest are reserved for future use.
 |gr|MySQL Group Replication||
 |host|Host (client)||
 |[`innodb`](domains#innodb)|InnoDB metrics [`INFORMATION_SCHEMA.INNODB_METRICS`](https://dev.mysql.com/doc/refman/en/information-schema-innodb-metrics-table.html)|v1.0.0|
-|[`innodb.buffer-pool`](domains#innodbbuffer-pool)|InnoDB buffer pool metrics [`INFORMATION_SCHEMA.INNODB_BUFFER_POOL_STATS`](https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-buffer-pool-stats-table.html)|v2.0.0|
+|[`innodb.buffer-pool`](domains#innodbbuffer-pool)|InnoDB buffer pool metrics [`INFORMATION_SCHEMA.INNODB_BUFFER_POOL_STATS`](https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-buffer-pool-stats-table.html)|v2.0.1|
 |innodb.mutex|InnoDB mutexes `SHOW ENGINE INNODB MUTEX`||
 |mariadb|MariaDB enhancements||
 |ndb|MySQL NDB Cluster||

@@ -13,14 +13,14 @@ import (
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/aws"
-	"github.com/cashapp/blip/dbconn"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/ha"
-	"github.com/cashapp/blip/plan"
-	"github.com/cashapp/blip/sink"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/aws"
+	"github.com/cashapp/blip/v2/dbconn"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/ha"
+	"github.com/cashapp/blip/v2/plan"
+	"github.com/cashapp/blip/v2/sink"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // LoadFunc is a callback that matches blip.Plugin.LoadMonitors.

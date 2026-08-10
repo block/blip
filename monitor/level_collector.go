@@ -12,10 +12,10 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/plan"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/plan"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // LevelCollector (LCO) executes the current plan to collect metrics.

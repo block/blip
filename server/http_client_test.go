@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 	"github.com/stretchr/testify/require"
 )
 

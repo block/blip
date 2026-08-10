@@ -62,9 +62,9 @@ Currently, this cannot be disabled.
 ## Limits
 
 Blip is limited to 3 connections per monitor.
-This can be changed by using the [`blip.ModifyDB` plugin](https://pkg.go.dev/github.com/cashapp/blip#Plugins), but this is not advised.
+This can be changed by using the [`blip.ModifyDB` plugin](https://pkg.go.dev/github.com/cashapp/blip/v2#Plugins), but this is not advised.
 
 Blip collects metrics in parallel with a limit of 2 collectors (domains) at once.
-This can be changed by setting the [`monitor.CollectParallel` variable](https://pkg.go.dev/github.com/cashapp/blip/monitor#pkg-variables), but this is not advised.
+This can be changed by setting the [`monitor.CollectParallel` variable](https://pkg.go.dev/github.com/cashapp/blip/v2/monitor#pkg-variables), but this is not advised.
 
 The 3 connection limit minus 2 parallel metrics collection leaves 1 connection free that is used by the [Heartbeat]({{< ref "/heartbeat" >}}) and [Plan Changer]({{< ref "/plans/changing" >}}).

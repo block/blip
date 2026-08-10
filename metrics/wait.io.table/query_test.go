@@ -5,7 +5,7 @@ package waitiotable_test
 import (
 	"testing"
 
-	waitiotable "github.com/cashapp/blip/metrics/wait.io.table"
+	waitiotable "github.com/cashapp/blip/v2/metrics/wait.io.table"
 	"github.com/go-test/deep"
 )
 

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/dbconn"
-	"github.com/cashapp/blip/test"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/dbconn"
+	"github.com/cashapp/blip/v2/test"
 )
 
 func sysvar(db *sql.DB, name string) (string, error) {

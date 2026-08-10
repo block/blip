@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 type ConfigFactory struct {

@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 func TestDefaultPasswordSecretParser(t *testing.T) {

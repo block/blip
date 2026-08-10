@@ -5,7 +5,7 @@ package sizetable_test
 import (
 	"testing"
 
-	sizetable "github.com/cashapp/blip/metrics/size.table"
+	sizetable "github.com/cashapp/blip/v2/metrics/size.table"
 	"github.com/go-test/deep"
 )
 

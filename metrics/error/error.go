@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/errors"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/errors"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )

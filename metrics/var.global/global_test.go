@@ -9,7 +9,7 @@ import (
 	"github.com/go-test/deep"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/cashapp/blip/test"
+	"github.com/cashapp/blip/v2/test"
 )
 
 func TestPrepareForSingleLevelAndNoSource(t *testing.T) {

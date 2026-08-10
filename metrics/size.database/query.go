@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/sqlutil"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/sqlutil"
 )
 
 func DataSizeQuery(set map[string]string, def blip.CollectorHelp) (string, []interface{}, error) {

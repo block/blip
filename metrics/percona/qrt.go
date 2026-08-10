@@ -10,9 +10,9 @@ import (
 
 	myerr "github.com/go-mysql/errors"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/errors"
-	"github.com/cashapp/blip/sqlutil"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/errors"
+	"github.com/cashapp/blip/v2/sqlutil"
 )
 
 /*

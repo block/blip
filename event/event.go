@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 // Event is something that happened in Blip. Events replace traditional logging.

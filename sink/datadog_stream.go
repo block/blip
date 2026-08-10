@@ -14,9 +14,9 @@ import (
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadog"
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadogV2"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // datadogMetricCursor identifies the next Blip metric to convert. It is kept

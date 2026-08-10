@@ -9,8 +9,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/errors"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/errors"
 )
 
 const (

@@ -11,10 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/push"
 	"github.com/prometheus/common/expfmt"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/prom"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/prom"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // PromPushgateway implmements https://github.com/prometheus/pushgateway.

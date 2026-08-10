@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 // Default is the default sink if config.sinks is not specified.

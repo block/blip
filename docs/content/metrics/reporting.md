@@ -68,7 +68,7 @@ Metrics can be renamed _after_ collection by using the [TransformMetrics plugin]
 
 ## Metric Data Structure
 
-Internally, Blip stores metrics in a [`Metrics` data structure](https://pkg.go.dev/github.com/cashapp/blip#Metrics):
+Internally, Blip stores metrics in a [`Metrics` data structure](https://pkg.go.dev/github.com/cashapp/blip/v2#Metrics):
 
 ```
 type Metrics struct {
@@ -82,7 +82,7 @@ type Metrics struct {
 }
 ```
 
-[Metric values](https://pkg.go.dev/github.com/cashapp/blip#MetricValue) (the last field in the struct) are reported per-domain.
+[Metric values](https://pkg.go.dev/github.com/cashapp/blip/v2#MetricValue) (the last field in the struct) are reported per-domain.
 To visual the metric values data structure, in YAML it would be:
 
 ```yaml

@@ -2,7 +2,7 @@
 
 package default_plan
 
-import "github.com/cashapp/blip"
+import "github.com/cashapp/blip/v2"
 
 func Exporter() blip.Plan {
 	return blip.Plan{

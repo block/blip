@@ -12,9 +12,9 @@ import (
 
 	//"github.com/stretchr/testify/assert"
 
-	"github.com/cashapp/blip"
-	blipAWS "github.com/cashapp/blip/aws"
-	"github.com/cashapp/blip/test/mock"
+	"github.com/cashapp/blip/v2"
+	blipAWS "github.com/cashapp/blip/v2/aws"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 func TestRDSClient(t *testing.T) {

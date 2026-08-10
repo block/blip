@@ -66,7 +66,7 @@ Here's a _mock_ (incomplete and nonfunctional) implementation of a sink (called 
 ```go
 import (
     "context"
-    "github.com/cashapp/blip"
+    "github.com/cashapp/blip/v2"
 )
 
 type Kim struct {

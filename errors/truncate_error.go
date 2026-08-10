@@ -3,7 +3,7 @@
 package errors
 
 import (
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 type TruncateErrorPolicy struct {

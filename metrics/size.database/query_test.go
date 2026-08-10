@@ -5,7 +5,7 @@ package sizedatabase_test
 import (
 	"testing"
 
-	sizedatabase "github.com/cashapp/blip/metrics/size.database"
+	sizedatabase "github.com/cashapp/blip/v2/metrics/size.database"
 	"github.com/go-test/deep"
 )
 

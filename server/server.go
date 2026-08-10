@@ -14,15 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/aws"
-	"github.com/cashapp/blip/dbconn"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/metrics"
-	"github.com/cashapp/blip/monitor"
-	"github.com/cashapp/blip/plan"
-	"github.com/cashapp/blip/sink"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/aws"
+	"github.com/cashapp/blip/v2/dbconn"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/metrics"
+	"github.com/cashapp/blip/v2/monitor"
+	"github.com/cashapp/blip/v2/plan"
+	"github.com/cashapp/blip/v2/sink"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // ControlChans is a convenience function to return arguments for Run.

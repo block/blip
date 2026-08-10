@@ -16,13 +16,13 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/event"
-	"github.com/cashapp/blip/ha"
-	"github.com/cashapp/blip/heartbeat"
-	"github.com/cashapp/blip/plan"
-	"github.com/cashapp/blip/prom"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/ha"
+	"github.com/cashapp/blip/v2/heartbeat"
+	"github.com/cashapp/blip/v2/plan"
+	"github.com/cashapp/blip/v2/prom"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // Monitor monitors one MySQL instance. The monitor is a high-level component

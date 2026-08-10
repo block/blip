@@ -5,7 +5,7 @@ package error
 import (
 	"testing"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 	"github.com/go-test/deep"
 )
 

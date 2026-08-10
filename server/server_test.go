@@ -5,7 +5,7 @@ package server_test
 import (
 	"testing"
 
-	"github.com/cashapp/blip/server"
+	"github.com/cashapp/blip/v2/server"
 )
 
 func TestServerBootDefault(t *testing.T) {

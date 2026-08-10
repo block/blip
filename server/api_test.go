@@ -9,14 +9,14 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/aws"
-	"github.com/cashapp/blip/dbconn"
-	"github.com/cashapp/blip/monitor"
-	"github.com/cashapp/blip/plan"
-	"github.com/cashapp/blip/server"
-	"github.com/cashapp/blip/test"
-	"github.com/cashapp/blip/test/mock"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/aws"
+	"github.com/cashapp/blip/v2/dbconn"
+	"github.com/cashapp/blip/v2/monitor"
+	"github.com/cashapp/blip/v2/plan"
+	"github.com/cashapp/blip/v2/server"
+	"github.com/cashapp/blip/v2/test"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 type testAPI struct {

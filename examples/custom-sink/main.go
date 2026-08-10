@@ -7,9 +7,9 @@ import (
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/server"
-	"github.com/cashapp/blip/sink"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/server"
+	"github.com/cashapp/blip/v2/sink"
 )
 
 type YAML struct{}

@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/test/mock"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 func stack(rb *Retry) []string {

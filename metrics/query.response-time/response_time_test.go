@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cashapp/blip/sqlutil"
-	"github.com/cashapp/blip/test"
+	"github.com/cashapp/blip/v2/sqlutil"
+	"github.com/cashapp/blip/v2/test"
 )
 
 func TestCollectP(t *testing.T) {

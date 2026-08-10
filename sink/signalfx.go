@@ -13,9 +13,9 @@ import (
 	"github.com/signalfx/golib/v3/datapoint"
 	"github.com/signalfx/golib/v3/sfxclient"
 
-	"github.com/cashapp/blip"
-	"github.com/cashapp/blip/sink/tr"
-	"github.com/cashapp/blip/status"
+	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/sink/tr"
+	"github.com/cashapp/blip/v2/status"
 )
 
 // SignalFx sends metrics to SignalFx.

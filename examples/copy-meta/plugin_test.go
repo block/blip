@@ -3,7 +3,7 @@ package blip_plugin
 import (
 	"testing"
 
-	"github.com/cashapp/blip"
+	"github.com/cashapp/blip/v2"
 )
 
 const (

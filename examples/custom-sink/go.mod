@@ -5,7 +5,7 @@ go 1.24
 replace github.com/cashapp/blip/v2 => ../../
 
 require (
-	github.com/cashapp/blip/v2 v2.0.1
+	github.com/cashapp/blip/v2 v2.1.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 

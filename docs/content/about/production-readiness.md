@@ -19,7 +19,7 @@ Feature readiness is documented here to help you make informed decisions about m
 
 ## v2.x
 
-Blip v2.x is Stable. Existing production-ready components retain their readiness; collectors introduced in v2.0 are marked New.
+Blip v2.x is Stable. Existing production-ready components retain their readiness; collectors and extension APIs introduced in v2.1 are marked New.
 
 ### Metric Collectors
 
@@ -68,6 +68,7 @@ Blip v2.x is Stable. Existing production-ready components retain their readiness
 |Feature|Readiness|
 |-------|------|
 |[API]({{< ref "api" >}})|Stable|
+|[External database modules]({{< ref "develop/database-modules" >}})|New|
 |[Heartbeat]({{< ref "config/heartbeat" >}})|Stable|
 |[Monitor Loading Stop-loss]({{< ref "monitors/loading#stop-loss" >}})|New|
 |[Plan Changing]({{< ref "plans/changing" >}})|New|

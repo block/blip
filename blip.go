@@ -34,11 +34,11 @@ const (
 	EVENT
 )
 
-// Metrics are metrics collected for one plan level, from one MySQL instance.
+// Metrics are metrics collected for one plan level, from one monitor.
 type Metrics struct {
 	Begin     time.Time                // when collection started
 	End       time.Time                // when collection completed
-	MonitorId string                   // ID of monitor (MySQL)
+	MonitorId string                   // ID of monitor
 	Plan      string                   // plan name
 	Level     string                   // level name
 	Interval  uint                     // interval number
@@ -99,7 +99,7 @@ type SinkFactoryArgs struct {
 	Tags      map[string]string // config.monitor.tags
 }
 
-// DbCredentials are MySQL credentials parsed or loaded for a connection.
+// DbCredentials are database credentials parsed or loaded for a connection.
 type DbCredentials struct {
 	Username string
 	Password string
@@ -173,7 +173,7 @@ type Plugins struct {
 	// ModifyDB modifies the *sql.DB connection pool. Use with caution.
 	ModifyDB func(*sql.DB, string)
 
-	// ParsePasswordSecret maps an AWS Secrets Manager payload to MySQL credentials.
+	// ParsePasswordSecret maps an AWS Secrets Manager payload to database credentials.
 	// If nil, Blip uses DefaultPasswordSecretParser.
 	ParsePasswordSecret PasswordSecretParser
 
@@ -216,6 +216,23 @@ type AWSConfigFactory interface {
 
 type DbFactory interface {
 	Make(ConfigMonitor) (*sql.DB, string, error)
+}
+
+// DbProvider owns the database connections associated with one monitor.
+// Primary returns the connection used by existing Blip subsystems and
+// collectors. Close releases the primary connection and any additional
+// database-specific resources owned by the provider.
+type DbProvider interface {
+	Primary() *sql.DB
+	Close() error
+}
+
+// DbProviderFactory is an optional DbFactory capability for database engines
+// that need to own more than one connection pool per monitor. Blip preserves
+// the existing DbFactory.Make path for factories that do not implement it.
+type DbProviderFactory interface {
+	DbFactory
+	MakeProvider(ConfigMonitor) (DbProvider, string, error)
 }
 
 type HTTPClientFactory interface {

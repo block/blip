@@ -114,7 +114,7 @@ Example [https://github.com/cashapp/blip/tree/main/examples/integrate](https://g
 The high-level work is:
 
 1. Implement `blip.Collector` and `blip.CollectorFactory`
-2. Register the domain/collector by calling `metrics.Register(myFactory, "foo")`
+2. Register the domain/collector by calling `metrics.Register("foo", myFactory)`
 3. Use the domain in a plan:
 
 ```yaml
@@ -124,6 +124,24 @@ level:
       metrics:
         - whatever
 ```
+
+`metrics.Register` preserves the original integration behavior: a factory that
+only implements `CollectorFactory` is treated as MySQL. A factory for another
+database type implements the optional `CollectorFactoryDatabaseTypes`
+capability so Blip can reject an incompatible monitor plan before collector
+preparation:
+
+```go
+func (myFactory) DatabaseTypes(string) []blip.DatabaseType {
+    return []blip.DatabaseType{"my-database"}
+}
+```
+
+A collector that does not depend on the monitor's database engine returns
+`blip.DatabaseTypeAny`. The database-neutral type cannot be combined with
+specific database types.
+
+When adding collectors for a complete external database engine, register that database type through a [database module]({{< ref "/develop/database-modules" >}}) before loading monitors.
 
 ## Long-running
 

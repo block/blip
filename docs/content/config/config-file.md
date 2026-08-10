@@ -210,7 +210,7 @@ For example, if Blip monitors Amazon RDS instances in region `us-east-1`, then s
 
 ### aws
 
-The `aws` section configures Amazon RDS for MySQL.
+The `aws` section configures Amazon RDS for MySQL. External database modules can also use its region and credential-source fields as documented by that module.
 
 ```yaml
 aws:
@@ -264,7 +264,7 @@ See [Cloud / AWS / IAM Authentication]({{< ref "/cloud/aws#iam-authentication" >
 |**Valid values**|AWS Secrets Manager ARN|
 |**Default value**||
 
-The `password-secret` variable sets the AWS Secrets Manager ARN that contains the MySQL user password.
+The `password-secret` variable sets the AWS Secrets Manager ARN that contains the database user password.
 When using the default parser, the secret JSON must contain a string `password` field, and it can optionally contain a string `username` field.
 Custom integrations can override this with [`Plugins.ParsePasswordSecret`]({{< ref "/develop/integration-api#aws-password-secrets" >}}).
 
@@ -732,7 +732,7 @@ Do not verify the server address (MySQL hostname).
 
 ## Monitors
 
-The `monitors` section is a list of MySQL instances to monitor.
+The `monitors` section is a list of database targets. Blip's built-in binary monitors MySQL, so the examples below show MySQL instances.
 Each instance is a YAML dictionary containing any of the [monitor default sections](#monitor-defaults) with one exception: `mysql` variables are top-level in a monitor.
 The example below shows two different MySQL instances to monitor.
 
@@ -761,7 +761,40 @@ Section [`exporter`](#exporter) is exactly the same in a monitor.
 
 <b>Refer to [Monitor Defaults](#monitor-defaults) for configuring MySQL instances, and remember: [`mysql`](#mysql) variables are top-level in a monitor (omit `mysql:` and include the variables directly).</b>
 
-Monitors have three variables that only appear in monitors: `id`, `meta`, and `plan`.
+Monitor entries have three variables that do not appear in monitor defaults: `id`, `meta`, and `plan`. A binary that activates an [external database module]({{< ref "/develop/database-modules" >}}) can also use `database-type` and `database-config`:
+
+```yaml
+monitors:
+  - id: external
+    database-type: my-database
+    hostname: database.example:1234
+    database-config:
+      module-option: value
+```
+
+### `database-type`
+
+| | |
+|-|-|
+|**Type**|string|
+|**Valid values**|`mysql` or a registered external database type|
+|**Default value**|`mysql`|
+
+The `database-type` variable selects the database implementation for the monitor. An omitted value retains Blip's built-in MySQL behavior. A non-MySQL value requires the integrating binary to register the corresponding external module before `Server.Boot`.
+
+The value is a literal module identifier. Direct environment-variable interpolation such as `${DATABASE_TYPE}` is supported, but monitor-field interpolation is not supported because the type selects monitor defaults.
+
+### `database-config`
+
+| | |
+|-|-|
+|**Type**|key-value map|
+|**Valid values**|module-specific|
+|**Default value**||
+
+The contents of `database-config` belong to the module selected by `database-type`. Blip applies environment and monitor variable interpolation recursively to string values, redacts the complete section from logged configuration, and asks the registered module to validate it. Refer to the external module for its supported fields. Blip itself does not register a non-MySQL module.
+
+External monitors do not inherit values from the top-level [`mysql`](#mysql) section or defaults for MySQL-only features. See [Database modules]({{< ref "/develop/database-modules" >}}) for the complete configuration contract.
 
 ### `id`
 
@@ -771,14 +804,14 @@ Monitors have three variables that only appear in monitors: `id`, `meta`, and `p
 |**Valid values**|any string|
 |**Default value**|(automatic)|
 
-The `id` variable uniquely identifies the MySQL instance in Blip.
+The `id` variable uniquely identifies the monitor in Blip.
 
 Every monitor has a unique ID that, by default, Blip sets automatically.
 You can set monitor IDs manually, but it's better to let Blip set them automatically to avoid duplicates (which causes a fatal error).
 
-Blip uses monitor IDs to track and report each MySQL instance in its own output and API.
+Blip uses monitor IDs to track and report each monitor in its own output and API.
 
-Blip does _not_ use monitor IDs to identify MySQL instances for reporting metrics, but you can use them if you want.
+Blip does _not_ use monitor IDs to identify database targets for reporting metrics, but you can use them if you want.
 For example:
 ```yaml
 monitors:
@@ -791,7 +824,7 @@ Since tags are passed to sinks (which report metrics), all sinks will receive th
 (Sinks receive the monitor ID at the code-level too, so technically this example is not necessary.)
 
 Monitor IDs are not guaranteed to be stable&mdash;they might change between Blip versions.
-Therefore, do not rely on them outside of Blip for truly stable, unique MySQL instance identification.
+Therefore, do not rely on them outside of Blip for stable, unique database target identification.
 
 ### `meta`
 

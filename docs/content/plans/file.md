@@ -49,6 +49,12 @@ And each domain has a domain-specific configuration that includes:
 
 These values are documented for each [domain]({{< ref "/metrics/domains" >}}) and printed on the command line by [`--print-domains`]({{< ref "/config/blip#--print-domains" >}}).
 
+All domains in a plan, across every level, must support at least one common
+database type. A database-neutral domain can share a plan with any
+database-specific domain, but domains for two different database types cannot
+share one plan. A shared plan configuration can still contain separate plans
+for different database types.
+
 Since Blip automatically levels up overlapping frequencies (described in [Intro / Plans]({{< ref "intro/plans" >}})), it's conventional to define levels from most to least frequent, as in this example:
 
 ```yaml

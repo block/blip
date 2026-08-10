@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-test/deep"
@@ -17,6 +18,8 @@ import (
 	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/test/mock"
 )
+
+const externalType blip.DatabaseType = "test-database"
 
 // --------------------------------------------------------------------------
 
@@ -162,5 +165,169 @@ func TestPlanShouldReturnDeepCopyOfPlan(t *testing.T) {
 			gotDomain := gotCollect[domainKey]
 			assert.NotEqual(t, fmt.Sprintf("%p", expectedDomain.Metrics), fmt.Sprintf("%p", gotDomain.Metrics))
 		}
+	}
+}
+
+type planDatabaseTypesFactory struct {
+	mock.MetricFactory
+	databaseTypes []blip.DatabaseType
+}
+
+func (f planDatabaseTypesFactory) DatabaseTypes(string) []blip.DatabaseType {
+	return f.databaseTypes
+}
+
+func TestSharedPlansValidateDatabaseCompatibilityPerMonitor(t *testing.T) {
+	const (
+		mysqlDomain    = "test.mysql-plan"
+		externalDomain = "test.external-plan"
+		sharedDomain   = "test.shared-plan"
+	)
+	factory := mock.MetricFactory{}
+	if err := metrics.Register(mysqlDomain, factory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(mysqlDomain) })
+	if err := metrics.Register(externalDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{externalType},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(externalDomain) })
+	if err := metrics.Register(sharedDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{blip.DatabaseTypeAny},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(sharedDomain) })
+
+	newPlan := func(name, databaseDomain string) blip.Plan {
+		return blip.Plan{
+			Name: name,
+			Levels: map[string]blip.Level{
+				"level": {
+					Name: "level",
+					Freq: "1s",
+					Collect: map[string]blip.Domain{
+						databaseDomain: {},
+						sharedDomain:   {},
+					},
+				},
+			},
+		}
+	}
+	mysqlPlan := newPlan("mysql-plan", mysqlDomain)
+	externalPlan := newPlan("external-plan", externalDomain)
+
+	pl := plan.NewLoader(func(blip.ConfigPlans) ([]blip.Plan, error) {
+		return []blip.Plan{mysqlPlan, externalPlan}, nil
+	})
+	if err := pl.LoadShared(blip.ConfigPlans{}, nil); err != nil {
+		t.Fatalf("LoadShared: %v", err)
+	}
+
+	// The omitted database type exercises Blip's existing MySQL default.
+	if err := pl.LoadMonitor(blip.ConfigMonitor{MonitorId: "mysql"}, nil); err != nil {
+		t.Fatalf("LoadMonitor(mysql): %v", err)
+	}
+	if err := pl.LoadMonitor(blip.ConfigMonitor{
+		MonitorId:    "external",
+		DatabaseType: externalType,
+	}, nil); err != nil {
+		t.Fatalf("LoadMonitor(external): %v", err)
+	}
+
+	if _, err := pl.Plan("mysql", mysqlPlan.Name, nil); err != nil {
+		t.Fatalf("MySQL plan for MySQL monitor: %v", err)
+	}
+	if _, err := pl.Plan("external", externalPlan.Name, nil); err != nil {
+		t.Fatalf("external plan for external monitor: %v", err)
+	}
+
+	if _, err := pl.Plan("mysql", externalPlan.Name, nil); err == nil ||
+		!strings.Contains(err.Error(), `collector test.external-plan does not support database type "mysql" (supported: [test-database])`) {
+		t.Fatalf("external plan for MySQL monitor error = %v", err)
+	}
+	if _, err := pl.Plan("external", mysqlPlan.Name, nil); err == nil ||
+		!strings.Contains(err.Error(), `collector test.mysql-plan does not support database type "test-database" (supported: [mysql])`) {
+		t.Fatalf("MySQL plan for external monitor error = %v", err)
+	}
+}
+
+func TestValidatePlansRejectsCollectorsWithoutCommonDatabaseType(t *testing.T) {
+	const (
+		mysqlDomain    = "test.no-common-mysql"
+		externalDomain = "test.no-common-external"
+		sharedDomain   = "test.no-common-shared"
+	)
+	if err := metrics.Register(mysqlDomain, mock.MetricFactory{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(mysqlDomain) })
+	if err := metrics.Register(externalDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{externalType},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(externalDomain) })
+	if err := metrics.Register(sharedDomain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{blip.DatabaseTypeAny},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(sharedDomain) })
+
+	mixedPlan := blip.Plan{
+		Name: "mixed-database-plan",
+		Levels: map[string]blip.Level{
+			"mysql": {
+				Freq: "1s",
+				Collect: map[string]blip.Domain{
+					mysqlDomain:  {},
+					sharedDomain: {},
+				},
+			},
+			"external": {
+				Freq: "5s",
+				Collect: map[string]blip.Domain{
+					externalDomain: {},
+				},
+			},
+		},
+	}
+
+	err := plan.ValidatePlans([]blip.Plan{mixedPlan})
+	if err == nil {
+		t.Fatal("mixed MySQL and external plan is valid")
+	}
+	expected := "collectors have no common database type: " +
+		"test.no-common-external=[test-database], " +
+		"test.no-common-mysql=[mysql], " +
+		"test.no-common-shared=[*]"
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("ValidatePlans error = %v", err)
+	}
+}
+
+func TestValidatePlansAllowsDatabaseNeutralCollectors(t *testing.T) {
+	const domain = "test.database-neutral-plan"
+	if err := metrics.Register(domain, planDatabaseTypesFactory{
+		databaseTypes: []blip.DatabaseType{blip.DatabaseTypeAny},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { metrics.Remove(domain) })
+
+	neutralPlan := blip.Plan{
+		Name: "database-neutral-plan",
+		Levels: map[string]blip.Level{
+			"level": {
+				Freq:    "1s",
+				Collect: map[string]blip.Domain{domain: {}},
+			},
+		},
+	}
+	if err := plan.ValidatePlans([]blip.Plan{neutralPlan}); err != nil {
+		t.Fatalf("database-neutral plan is invalid: %v", err)
 	}
 }

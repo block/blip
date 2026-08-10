@@ -46,9 +46,10 @@ type collection struct {
 // stop/destroy the Engine. Like all Monitor components, an Engine is not restarted
 // or reused, it's recreated if the Monitor is restarted.
 type Engine struct {
-	cfg       blip.ConfigMonitor
-	db        *sql.DB
-	monitorId string
+	cfg        blip.ConfigMonitor
+	db         *sql.DB
+	dbProvider blip.DbProvider
+	monitorId  string
 	// --
 	event event.MonitorReceiver
 	*sync.Mutex
@@ -57,13 +58,19 @@ type Engine struct {
 	collectAt      map[string][]*clutch // keyed on level, sorted ascending by CMR
 	checkAt        map[string][]*clutch // keyed on level
 	collectionChan chan collection
+	collectorWG    sync.WaitGroup
 }
 
 func NewEngine(cfg blip.ConfigMonitor, db *sql.DB) *Engine {
+	return newEngineWithDBProvider(cfg, db, nil)
+}
+
+func newEngineWithDBProvider(cfg blip.ConfigMonitor, db *sql.DB, dbProvider blip.DbProvider) *Engine {
 	return &Engine{
-		cfg:       cfg,
-		db:        db,
-		monitorId: cfg.MonitorId,
+		cfg:        cfg,
+		db:         db,
+		dbProvider: dbProvider,
+		monitorId:  cfg.MonitorId,
 		// --
 		event:          event.MonitorReceiver{MonitorId: cfg.MonitorId},
 		Mutex:          &sync.Mutex{},
@@ -109,14 +116,14 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 		}
 	}()
 
-	// Connect to MySQL. DO NOT loop and retry; try once and return on error
+	// Connect to the database. DO NOT loop and retry; try once and return on error
 	// to let the caller (a LevelCollector.changePlan goroutine) retry with backoff.
-	status.Monitor(e.monitorId, status.ENGINE_PREPARE, "%s: connect to MySQL", plan.Name)
+	status.Monitor(e.monitorId, status.ENGINE_PREPARE, "%s: connect to database", plan.Name)
 	dbctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	err := e.db.PingContext(dbctx)
 	cancel()
 	if err != nil {
-		lerr = fmt.Errorf("while connecting to MySQL: %s", err)
+		lerr = fmt.Errorf("while connecting to database: %s", err)
 		return lerr
 	}
 
@@ -143,13 +150,14 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 			if _, ok := collectors[domain]; ok {
 				continue // already seen
 			}
-			c, err := metrics.Make(
+			c, err := metrics.MakeWithDBProvider(
 				domain,
 				blip.CollectorFactoryArgs{
 					Config:    e.cfg,
 					DB:        e.db,
 					MonitorId: e.monitorId,
 				},
+				e.dbProvider,
 			)
 			if err != nil {
 				lerr = fmt.Errorf("while making %s collector: %s", domain, err)
@@ -295,7 +303,11 @@ func (e *Engine) Collect(emrCtx context.Context, interval uint, levelName string
 	for _, cl := range domains {
 		select {
 		case <-sem:
-			go cl.collect(*m, sem)
+			e.collectorWG.Add(1)
+			go func(cl *clutch, metrics blip.Metrics) {
+				defer e.collectorWG.Done()
+				cl.collect(metrics, sem)
+			}(cl, *m)
 			running[cl.c.Domain()] = true
 		case <-emrCtx.Done():
 			blip.Debug("EMR timeout starting collectors")
@@ -411,13 +423,9 @@ SWEEP:
 	return metrics, fmt.Errorf("%s: failed: zero metrics collected, %d errors", coId, errCount)
 }
 
-// Stop the engine and cleanup any metrics associated with it.
-// TODO: There is a possible race condition when this is called. Since
-// Engine.Collect is called as a go-routine, we could have an invocation
-// of the function block waiting for Engine.Stop to unlock
-// after which Collect would run after cleanup has been called.
-// This could result in a panic, though that should be caught and logged.
-// Since the monitor is stopping anyway this isn't a huge issue.
+// Stop the engine and cleanup any metrics associated with it. Collect calls
+// are serialized by the engine lock; collectorWG also joins background
+// collector runs that outlive the Collect call which started them.
 func (e *Engine) Stop() {
 	blip.Debug("Engine.Stop called")
 	e.Lock()
@@ -433,16 +441,26 @@ func (e *Engine) stopCollectors() {
 	/* -- CALLER MUST LOCK Engine -- */
 	for _, cl := range e.collectors {
 		cl.Lock()
-		if !cl.running {
-			cl.Unlock()
+		if cl.running {
+			blip.Debug("%s: %s stopping", e.monitorId, cl.c.Domain())
+			if cl.cancel != nil {
+				cl.cancel()
+			}
+		} else {
 			blip.Debug("%s: %s not running", e.monitorId, cl.c.Domain())
-			continue
 		}
-		blip.Debug("%s: %s stopping", e.monitorId, cl.c.Domain())
-		cl.cancel()
+		cl.Unlock()
+	}
+
+	// Cleanup callbacks can release resources used by collector goroutines, so
+	// wait until every foreground or background run has observed cancellation.
+	e.collectorWG.Wait()
+	for _, cl := range e.collectors {
+		cl.Lock()
 		if cl.cleanup != nil {
 			blip.Debug("%s: %s cleanup", e.monitorId, cl.c.Domain())
 			cl.cleanup()
+			cl.cleanup = nil
 		}
 		cl.Unlock()
 	}

@@ -28,23 +28,74 @@ import (
 	waitiotable "github.com/cashapp/blip/v2/metrics/wait.io.table"
 )
 
-// Register registers a factory that makes one or more collector by domain name.
-// This is function is one several integration points because it allows users
+// Register registers a factory that makes one or more collectors by domain name.
+// This is one of several integration points because it allows users
 // to plug in new metric collectors by providing a factory to make them.
 // Blip calls this function in an init function to register the built-in metric
 // collectors.
 //
+// If the factory implements blip.CollectorFactoryDatabaseTypes, Blip records
+// the database types it declares for this domain. Existing factories that do
+// not implement that optional interface retain Blip's historical MySQL
+// behavior.
+//
 // See types in the blip package for more details.
 func Register(domain string, f blip.CollectorFactory) error {
 	r.Lock()
-	defer r.Unlock()
-	_, ok := r.factory[domain]
-	if ok {
+	_, registered := r.factory[domain]
+	r.Unlock()
+	if registered {
 		return fmt.Errorf("%s already registered", domain)
 	}
-	r.factory[domain] = f
-	blip.Debug("register collector %s", domain)
+
+	databaseTypes := []blip.DatabaseType{blip.DatabaseTypeMySQL}
+	if typedFactory, ok := f.(blip.CollectorFactoryDatabaseTypes); ok {
+		databaseTypes = typedFactory.DatabaseTypes(domain)
+	}
+	databaseTypes, err := normalizeDatabaseTypes(domain, databaseTypes)
+	if err != nil {
+		return err
+	}
+
+	r.Lock()
+	defer r.Unlock()
+	// Another goroutine might have registered the domain while the factory's
+	// optional compatibility metadata was being evaluated.
+	if _, registered := r.factory[domain]; registered {
+		return fmt.Errorf("%s already registered", domain)
+	}
+	r.factory[domain] = registeredFactory{
+		factory:       f,
+		databaseTypes: databaseTypes,
+	}
+	blip.Debug("register collector %s for database types %v", domain, databaseTypes)
 	return nil
+}
+
+func normalizeDatabaseTypes(domain string, databaseTypes []blip.DatabaseType) ([]blip.DatabaseType, error) {
+	if len(databaseTypes) == 0 {
+		return nil, fmt.Errorf("collector %s supports no database types", domain)
+	}
+
+	seen := map[blip.DatabaseType]bool{}
+	normalized := make([]blip.DatabaseType, 0, len(databaseTypes))
+	for _, databaseType := range databaseTypes {
+		if databaseType != blip.DatabaseTypeAny && !blip.ValidDatabaseType(databaseType) {
+			return nil, fmt.Errorf("collector %s declares invalid database type %q", domain, databaseType)
+		}
+		if seen[databaseType] {
+			continue
+		}
+		seen[databaseType] = true
+		normalized = append(normalized, databaseType)
+	}
+	if seen[blip.DatabaseTypeAny] && len(normalized) != 1 {
+		return nil, fmt.Errorf("collector %s declares database-neutral compatibility with specific database types", domain)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i] < normalized[j]
+	})
+	return normalized, nil
 }
 
 // Remove removes the metrics collector factory for the given domain. This is
@@ -77,18 +128,77 @@ func Exists(domain string) bool {
 	return ok
 }
 
+// SupportedDatabaseTypes returns a copy of the database types supported by the
+// registered collector domain.
+func SupportedDatabaseTypes(domain string) ([]blip.DatabaseType, error) {
+	r.Lock()
+	defer r.Unlock()
+	registered, ok := r.factory[domain]
+	if !ok {
+		return nil, fmt.Errorf("invalid domain: %s (no factory registered)", domain)
+	}
+	databaseTypes := make([]blip.DatabaseType, len(registered.databaseTypes))
+	copy(databaseTypes, registered.databaseTypes)
+	return databaseTypes, nil
+}
+
+// ValidateDatabase returns nil if the domain exists and can be used with the
+// database type.
+func ValidateDatabase(domain string, databaseType blip.DatabaseType) error {
+	r.Lock()
+	defer r.Unlock()
+	return validateDatabase(domain, databaseType)
+}
+
+func validateDatabase(domain string, databaseType blip.DatabaseType) error {
+	registered, ok := r.factory[domain]
+	if !ok {
+		return fmt.Errorf("invalid domain: %s (no factory registered)", domain)
+	}
+	for _, supportedType := range registered.databaseTypes {
+		if supportedType == blip.DatabaseTypeAny || supportedType == databaseType {
+			return nil
+		}
+	}
+	return fmt.Errorf("collector %s does not support database type %q (supported: %v)",
+		domain, databaseType, registered.databaseTypes)
+}
+
 // Make makes a metric collector for the domain using a previously registered factory.
 //
 // See types in the blip package for more details.
 func Make(domain string, args blip.CollectorFactoryArgs) (blip.Collector, error) {
+	return makeWithDBProvider(domain, args, nil)
+}
+
+// MakeWithDBProvider makes a collector with an optional monitor-owned database
+// provider. Registered factories without the optional provider capability
+// continue through their historical Make method.
+func MakeWithDBProvider(domain string, args blip.CollectorFactoryArgs, provider blip.DbProvider) (blip.Collector, error) {
+	return makeWithDBProvider(domain, args, provider)
+}
+
+func makeWithDBProvider(domain string, args blip.CollectorFactoryArgs, provider blip.DbProvider) (blip.Collector, error) {
 	r.Lock()
 	defer r.Unlock()
-	f, ok := r.factory[domain]
+	registered, ok := r.factory[domain]
 	if !ok {
 		return nil, fmt.Errorf("invalid domain: %s (no factory registered)", domain)
 
 	}
-	return f.Make(domain, args)
+	// ValidatePlans creates collectors without a monitor. Database compatibility
+	// is checked when the monitor resolves the selected plan.
+	if !args.Validate {
+		if err := validateDatabase(domain, args.Config.EffectiveDatabaseType()); err != nil {
+			return nil, err
+		}
+	}
+	if provider != nil {
+		if providerFactory, ok := registered.factory.(blip.CollectorFactoryWithDBProvider); ok {
+			return providerFactory.MakeWithDBProvider(domain, args, provider)
+		}
+	}
+	return registered.factory.Make(domain, args)
 }
 
 func PrintDomains() string {
@@ -216,14 +326,19 @@ func init() {
 // instance below.
 type repo struct {
 	*sync.Mutex
-	factory map[string]blip.CollectorFactory
+	factory map[string]registeredFactory
+}
+
+type registeredFactory struct {
+	factory       blip.CollectorFactory
+	databaseTypes []blip.DatabaseType
 }
 
 // Internal package instance of repo that holds all collector factories registered
 // by calls to Register, which includes the built-in factories.
 var r = &repo{
 	Mutex:   &sync.Mutex{},
-	factory: map[string]blip.CollectorFactory{},
+	factory: map[string]registeredFactory{},
 }
 
 // factory is the built-in factory for creating all built-in collectors.
@@ -234,6 +349,7 @@ type factory struct {
 }
 
 var _ blip.CollectorFactory = &factory{}
+var _ blip.CollectorFactoryDatabaseTypes = &factory{}
 
 // Internet package instance of factory that makes all built-it collectors.
 // This factory is registered in the init func above.
@@ -242,6 +358,13 @@ var f = &factory{}
 func InitFactory(factories blip.Factories) {
 	f.AWSConfig = factories.AWSConfig
 	f.HTTPClient = factories.HTTPClient
+}
+
+func (f *factory) DatabaseTypes(domain string) []blip.DatabaseType {
+	if domain == awsrds.DOMAIN {
+		return []blip.DatabaseType{blip.DatabaseTypeAny}
+	}
+	return []blip.DatabaseType{blip.DatabaseTypeMySQL}
 }
 
 // Make makes a metric collector for the domain. This is the built-in factory

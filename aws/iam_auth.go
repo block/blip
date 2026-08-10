@@ -19,9 +19,15 @@ type AuthToken struct {
 }
 
 func NewAuthToken(username, hostname string, cfg aws.Config) AuthToken {
-	// RDS auth tokens require the :3306 suffix
+	return NewAuthTokenWithDefaultPort(username, hostname, "3306", cfg)
+}
+
+// NewAuthTokenWithDefaultPort constructs an RDS authentication token signer,
+// adding defaultPort when hostname does not already include a port.
+func NewAuthTokenWithDefaultPort(username, hostname, defaultPort string, cfg aws.Config) AuthToken {
+	// RDS auth tokens require the database port in the signed endpoint.
 	if !portRe.MatchString(hostname) {
-		hostname += ":3306"
+		hostname += ":" + defaultPort
 	}
 
 	return AuthToken{

@@ -23,12 +23,12 @@ import (
 //
 // The term "collector" is a little misleading because the LCO doesn't collect
 // metrics, but it is the first step in the metrics collection process, which
-// looks roughly like: LCO -> Engine -> metric collectors -> MySQL.
+// looks roughly like: LCO -> Engine -> metric collectors -> database.
 // In Run, the LCO checks every 1s for the highest level in the plan to collect.
 // For example, after 5s it'll collect levels with a frequency divisible by 5s.
 // See https://block.github.io/blip/plans/file/.
 //
-// Metrics from MySQL flow back to the LCO as blip.Metrics, which the LCO
+// Metrics from the database flow back to the LCO as blip.Metrics, which the LCO
 // passes to blip.Plugin.TransformMetrics if specified, then to all sinks
 // specified for the monitor.
 type LevelCollector interface {
@@ -78,6 +78,10 @@ type LevelCollectorArgs struct {
 }
 
 func NewLevelCollector(args LevelCollectorArgs) *lco {
+	return newLevelCollectorWithDBProvider(args, nil)
+}
+
+func newLevelCollectorWithDBProvider(args LevelCollectorArgs, dbProvider blip.DbProvider) *lco {
 	return &lco{
 		cfg:              args.Config,
 		planLoader:       args.PlanLoader,
@@ -85,7 +89,7 @@ func NewLevelCollector(args LevelCollectorArgs) *lco {
 		transformMetrics: args.TransformMetrics,
 		// --
 		monitorId:   args.Config.MonitorId,
-		engine:      NewEngine(args.Config, args.DB),
+		engine:      newEngineWithDBProvider(args.Config, args.DB, dbProvider),
 		stateMux:    &sync.Mutex{},
 		paused:      true,
 		changeMux:   &sync.Mutex{},
@@ -215,15 +219,7 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 				break
 			}
 			blip.Debug("stopChan closed at %s s=%d interval=%d", startTime, s, interval)
-			c.changeMux.Lock()
-			defer c.changeMux.Unlock()
-			c.stopped = true // make ChangePlan do nothing
-			select {
-			case <-c.changePlanDoneChan:
-				c.changePlanCancelFunc() // stop --> changePlan goroutine
-				<-c.changePlanDoneChan   // wait for changePlan goroutine
-			default:
-			}
+			c.stopChangePlan()
 			c.engine.Stop() // stop all collectors and run their cleanup func
 			return nil
 		default: // no
@@ -257,6 +253,23 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 		c.stateMux.Unlock() // -- UNLOCK --
 	}
 	return nil
+}
+
+// stopChangePlan prevents new plan changes, cancels the current plan change,
+// and waits for its worker to stop using the engine and database provider.
+func (c *lco) stopChangePlan() {
+	c.changeMux.Lock()
+	defer c.changeMux.Unlock()
+
+	c.stopped = true
+	if c.changePlanCancelFunc == nil {
+		return
+	}
+
+	c.changePlanCancelFunc()
+	<-c.changePlanDoneChan
+	c.changePlanCancelFunc = nil
+	c.changePlanDoneChan = nil
 }
 
 func (c *lco) collect(interval uint, levelName string, startTime time.Time) {
@@ -357,7 +370,7 @@ func (c *lco) ChangePlan(newState, newPlanName string) error {
 
 // changePlan is a gorountine run by ChangePlan It's potentially long-running
 // because it waits for Engine.Prepare. If that function returns an error
-// (e.g. MySQL is offline), then this function retires forever, or until canceled
+// (e.g. the database is offline), then this function retries forever, or until canceled
 // by either another call to ChangePlan or Run is stopped (LCO is terminated).
 //
 // Never all this function directly; it's only called via ChangePlan, which
@@ -389,7 +402,10 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 		errMsg := fmt.Sprintf("%s: error loading new plan %s: %s (retrying)", change, newPlanName, err)
 		status.Monitor(c.monitorId, status.LEVEL_CHANGE_PLAN, "%s", errMsg)
 		c.event.Sendf(event.CHANGE_PLAN_ERROR, "%s", errMsg)
-		time.Sleep(2 * time.Second)
+		if !waitForChangePlanRetry(ctx, 2*time.Second) {
+			blip.Debug("changePlan canceled while loading plan")
+			return
+		}
 	}
 
 	change = fmt.Sprintf("state:%s plan:%s -> state:%s plan:%s", oldState, oldPlanName, newState, newPlan.Name)
@@ -438,9 +454,9 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 		c.stateMux.Unlock() // -- X unlock --
 	}
 
-	// Try forever, or until context is cancelled, because it could be that MySQL is
+	// Try forever, or until context is cancelled, because it could be that the database is
 	// temporarily offline. In the real world, this is not uncommon: Blip might be
-	// started before MySQL, for example. We're running in a goroutine from ChangePlan
+	// started before the database, for example. We're running in a goroutine from ChangePlan
 	// that already returned to its caller, so we're not blocking anything here.
 	// More importantly, as documented in several place: this is _the code_ that
 	// all other code relies on to try "forever" because a plan must be prepared
@@ -464,11 +480,26 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 			return // changePlan goroutine has been cancelled
 		}
 		status.Monitor(c.monitorId, status.LEVEL_CHANGE_PLAN, "%s: error preparing new plan %s: %s (retrying)", change, newPlan.Name, err)
-		time.Sleep(retry.NextBackOff())
+		if !waitForChangePlanRetry(ctx, retry.NextBackOff()) {
+			blip.Debug("changePlan canceled while waiting to retry plan preparation")
+			return
+		}
 	}
 
 	status.RemoveComponent(c.monitorId, status.LEVEL_CHANGE_PLAN)
 	c.event.Sendf(event.CHANGE_PLAN_SUCCESS, "%s", change)
+}
+
+func waitForChangePlanRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // Pause pauses metrics collection until ChangePlan is called. Run still runs,

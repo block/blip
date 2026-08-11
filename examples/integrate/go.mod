@@ -4,7 +4,7 @@ go 1.24
 
 replace github.com/cashapp/blip/v2 => ../../
 
-require github.com/cashapp/blip/v2 v2.0.1
+require github.com/cashapp/blip/v2 v2.1.0
 
 require (
 	filippo.io/edwards25519 v1.1.1 // indirect

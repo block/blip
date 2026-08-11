@@ -2,15 +2,15 @@
 weight: 0
 ---
 
-## v2.0
+## v2
 
-This is a new major version. It added new metric domains, runtime debug controls, extensible AWS Secrets Manager parsing, and a more resilient Datadog delivery path.
+This is a new major version. It added external database module support, new metric domains, runtime debug controls, extensible AWS Secrets Manager parsing, and a more resilient Datadog delivery path.
 
 As described in the [Blip versioning guidelines](https://github.com/block/blip/blob/main/CONTRIBUTING.md#versioning), this series is not entirely backwards-compatible with v1.2. Integrations that use the affected exported APIs must be updated before upgrading.
 
 ### Integration API changes
 
-|Component|v1.2|v2.0|
+|Component|v1.2|v2|
 |---------|----|----|
 |AWS secret password helper|`aws.Secret.Password(context.Context) (string, error)`|Removed; use `GetSecret` or `GetSecretPayload`|
 |Database credential type|`dbconn.Credentials`|`blip.DbCredentials`|
@@ -23,7 +23,7 @@ As described in the [Blip versioning guidelines](https://github.com/block/blip/b
 
 To upgrade an integration:
 
-1. Update imports from `github.com/cashapp/blip/...` to `github.com/cashapp/blip/v2/...` and require `github.com/cashapp/blip/v2 v2.0.1` or later.
+1. Update imports from `github.com/cashapp/blip/...` to `github.com/cashapp/blip/v2/...` and require `github.com/cashapp/blip/v2 v2.1.0` or later.
 2. Replace `dbconn.Credentials` with `blip.DbCredentials` and update any `dbconn.CredentialFunc` implementations.
 3. Accept the new variadic options argument when storing or wrapping `dbconn.NewConnFactory`; ordinary two-argument calls continue to compile.
 4. Capture the parameter slice returned by `DataSizeQuery`, `TableSizeQuery`, and `TableIoWaitQuery`, and pass it to the database query call.
@@ -36,11 +36,15 @@ AWS Secrets Manager `password-secret` authentication now uses the secret's optio
 
 Default sink HTTP clients now have a 10-second whole-request timeout plus bounded connection and response-header timeouts. Custom HTTP client factories are unchanged.
 
-### v2.0.1 (7 Aug 2026)
+### v2.1.0 (10 Aug 2026)
 
-Version v2.0.0 was withdrawn before release completion because its module path lacked the `/v2` suffix required by Go modules. v2.0.1 is the first usable v2 release.
+Version v2.0.0 was withdrawn before release completion because its module path lacked the `/v2` suffix required by Go modules. v2.1.0 is the first usable v2 release.
 
 * Added the required `/v2` module and import path for the v2 series.
+* Added opt-in external database module registration with opaque module-owned configuration and strict validation.
+* Added composable database providers, engine-neutral credential callbacks, and collector access to monitor-owned database resources.
+* Added collector database compatibility metadata and plan validation against each monitor's database type.
+* Hardened monitor teardown to stop collectors before releasing database providers.
 * Added the `autoinc` domain for auto-increment column utilization.
 * Added the `error.account`, `error.global`, `error.host`, `error.thread`, and `error.user` domains.
 * Added the `innodb.buffer-pool` domain.
@@ -51,6 +55,7 @@ Version v2.0.0 was withdrawn before release completion because its module path l
 * Preserved complete metric metadata and isolated counter state in the delta sink.
 * Redacted database, sink, and authenticated proxy credentials from debug logs.
 * Fixed query construction to use driver parameter interpolation across collectors and heartbeats.
+* Fixed interpolation of multiple environment and monitor placeholders in one value.
 * Fixed nondeterministic `query.response-time` bucket selection and added detailed latency diagnostics.
 * Fixed a shutdown panic in signal handling.
 * Updated the test matrix from MySQL 5.7 to MySQL 8.4 and refreshed dependencies.

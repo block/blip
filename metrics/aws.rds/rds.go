@@ -164,6 +164,8 @@ func (m *RDS) Collect(ctx context.Context, levelName string) ([]blip.MetricValue
 	input.StartTime = &begin
 	input.EndTime = &now
 
+	blip.Debug("%s: GetMetricData [%+v]\n", m.monitorId, *input)
+
 	output, err := m.client.GetMetricData(ctx, input)
 	if err != nil {
 		return nil, err
@@ -173,6 +175,9 @@ func (m *RDS) Collect(ctx context.Context, levelName string) ([]blip.MetricValue
 
 	for i := range output.MetricDataResults {
 		r := output.MetricDataResults[i]
+		if len(r.Timestamps) == 0 {
+			blip.Debug("%s: zero data points for %s\n", m.monitorId, *r.Label)
+		}
 		for j := range r.Timestamps {
 
 			metric := *r.Label

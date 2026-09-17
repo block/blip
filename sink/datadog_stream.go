@@ -217,8 +217,19 @@ func newDatadogSendCheckpoint(metrics *blip.Metrics, checkpoint any) (*datadogSe
 }
 
 func (s *Datadog) collectDatadogSeries(ctx context.Context, metrics *blip.Metrics, domains []string, start datadogMetricCursor, limit int) ([]datadogV2.MetricSeries, []datadogMetricCursor, datadogMetricCursor, bool, error) {
-	series := make([]datadogV2.MetricSeries, 0, limit)
-	cursors := make([]datadogMetricCursor, 0, limit)
+	// Count source values only until the window is full. Slice lengths avoid
+	// a second conversion pass, and starting at the cursor avoids rescanning
+	// earlier domains for each window. Skipped values can overestimate capacity.
+	capacity := 0
+	for domain := start.domain; domain < len(domains) && capacity < limit; domain++ {
+		remaining := len(metrics.Values[domains[domain]])
+		if domain == start.domain {
+			remaining -= start.metric
+		}
+		capacity += min(remaining, limit-capacity)
+	}
+	series := make([]datadogV2.MetricSeries, 0, capacity)
+	cursors := make([]datadogMetricCursor, 0, capacity)
 	cursor := start
 
 	for cursor.domain < len(domains) {

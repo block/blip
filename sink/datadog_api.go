@@ -182,16 +182,20 @@ func prepareDatadogPayload(ctx context.Context, series []datadogV2.MetricSeries,
 	}
 
 	var raw bytes.Buffer
+	candidates := min(maxSeries, len(series)-start)
 	grow := rawTarget
-	if estimated := maxSeries * 512; estimated < grow {
-		grow = estimated
+	// This is only an initial capacity hint: long series can still grow the
+	// buffer, and the exact byte checks below remain authoritative. Compare
+	// before multiplying to keep the estimate bounded without overflow.
+	if candidates <= rawTarget/512 {
+		grow = candidates * 512
 	}
 	if grow > 0 {
 		raw.Grow(grow)
 	}
 	raw.Write(datadogPayloadPrefix)
 
-	offsets := make([]int, 0, maxSeries)
+	offsets := make([]int, 0, candidates)
 	end := start
 	for end < len(series) && len(offsets) < maxSeries {
 		select {

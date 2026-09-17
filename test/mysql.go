@@ -20,6 +20,7 @@ var DefaultMySQLVersion = "mysql80"
 // MySQLPort maps to Docker ports in docker/docker-compose.yaml.
 var MySQLPort = map[string]string{
 	"mysql80": "33800",
+	"mysql84": "33840",
 	"mysql57": "33570",
 	"ps57":    "33900",
 }

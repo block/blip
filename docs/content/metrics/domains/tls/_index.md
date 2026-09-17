@@ -20,12 +20,12 @@ This domain reports a single derived metric, `enabled`, that should be monitored
 |**Metric Type**|bool|
 |**Value Units**||
 
-True (1) if `have_ssl = YES`, else false (0).
+True (1) if the main MySQL connection interface supports encrypted connections, else false (0).
 Metrics sinks that don't support bool report this metric as a gauge.
 
 {{< hint type=note >}}
-`have_ssl` is deprecated as of MySQL 8.0.26.
-This domain does not currently support the [`tls_channel_status` table](https://dev.mysql.com/doc/refman/8.0/en/performance-schema-tls-channel-status-table.html) but there is an [open issue](https://github.com/cashapp/blip/issues/133) to fix this.
+On MySQL 8.0.21 and newer, Blip reads the `mysql_main` channel's `Enabled` property from the [`tls_channel_status` table](https://dev.mysql.com/doc/refman/8.0/en/performance-schema-tls-channel-status-table.html).
+For older MySQL versions and compatible distributions that do not have this table, or when the table cannot be read, Blip falls back to `have_ssl` when that variable is available.
 {{< /hint >}}
 
 ## Options
@@ -46,7 +46,8 @@ None.
 
 ## MySQL Config
 
-None.
+On servers without the legacy `have_ssl` variable, including MySQL 8.4 and newer, the Blip database user needs `SELECT` access to `performance_schema.tls_channel_status`.
+Earlier versions can use the legacy `have_ssl` fallback when this table is unavailable or inaccessible.
 
 ## Changelog
 

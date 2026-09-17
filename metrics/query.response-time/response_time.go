@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ const (
 	OPT_REAL_PERCENTILES = "real-percentiles"
 	OPT_TRUNCATE_TABLE   = "truncate-table"
 	OPT_TRUNCATE_TIMEOUT = "truncate-timeout"
+
+	defaultPercentile = "p999"
 
 	ERR_NO_TABLE        = "table-not-exist"
 	ERR_TRUNCATE_FAILED = "truncate-timeout"
@@ -61,6 +64,22 @@ func NewResponseTime(db *sql.DB) *ResponseTime {
 		db:      db,
 		atLevel: map[string]*qrtConfig{},
 	}
+}
+
+func percentileMetrics(metrics []string) ([]sqlutil.P, error) {
+	if len(metrics) == 0 {
+		metrics = []string{defaultPercentile}
+	}
+	for _, metric := range metrics {
+		if len(metric) < 2 || (metric[0] != 'p' && metric[0] != 'P') {
+			return nil, fmt.Errorf("invalid percentile metric %q: expected pN where N is an integer from 1 through 999", metric)
+		}
+		n, err := strconv.Atoi(metric[1:])
+		if err != nil || n < 1 || n > 999 {
+			return nil, fmt.Errorf("invalid percentile metric %q: expected pN where N is an integer from 1 through 999", metric)
+		}
+	}
+	return sqlutil.PercentileMetrics(metrics)
 }
 
 // Domain returns the Blip metric domain name (DOMAIN const).
@@ -165,8 +184,9 @@ LEVEL:
 			config.lockWaitQuery = fmt.Sprintf(LOCKWAIT_QUERY, int64(lockWaitTimeout))
 		}
 
-		// Process list of percentiles metrics into a list of names and values
-		p, err := sqlutil.PercentileMetrics(dom.Metrics)
+		// Process the configured percentile metrics into names and values,
+		// applying and validating the documented default during preparation.
+		p, err := percentileMetrics(dom.Metrics)
 		if err != nil {
 			return nil, err
 		}

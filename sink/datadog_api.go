@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,13 +184,7 @@ func prepareDatadogPayload(ctx context.Context, series []datadogV2.MetricSeries,
 
 	var raw bytes.Buffer
 	candidates := min(maxSeries, len(series)-start)
-	grow := rawTarget
-	// This is only an initial capacity hint: long series can still grow the
-	// buffer, and the exact byte checks below remain authoritative. Compare
-	// before multiplying to keep the estimate bounded without overflow.
-	if candidates <= rawTarget/512 {
-		grow = candidates * 512
-	}
+	grow := datadogRawCapacity(series[start:start+candidates], rawTarget)
 	if grow > 0 {
 		raw.Grow(grow)
 	}
@@ -284,6 +279,50 @@ func prepareDatadogPayload(ctx context.Context, series []datadogV2.MetricSeries,
 		compressed:        true,
 	}
 	return prepared, end, nil
+}
+
+// datadogRawCapacity uses the median of at most eight evenly spaced series.
+// It inspects at most sixteen tags per series without scanning string contents.
+// Allow extra room for JSON strings, but keep the existing small-series floor.
+// This is only a hint: escaping, other fields, and unsampled outliers can still
+// require growth. Exact payload checks remain authoritative.
+func datadogRawCapacity(series []datadogV2.MetricSeries, target int) int {
+	count := len(series)
+	if count == 0 || target <= 0 {
+		return 0
+	}
+	if count > target/512 {
+		return target
+	}
+	samples := min(count, 8)
+	perSeries := target / count
+	// perSeries >= 512. Cap before doubling or multiplying to avoid overflow.
+	stringBudget := (perSeries - 128) / 2
+	var sizes [8]int
+	for i := 0; i < samples; i++ {
+		// Include both ends; quotient/remainder avoids multiplying count by i.
+		divisor := max(samples-1, 1)
+		index := (count-1)/divisor*i + (count-1)%divisor*i/divisor
+		value := &series[index]
+		size := min(len(value.Metric), stringBudget)
+		tags := min(len(value.Tags), 16)
+		for j := 0; j < tags; j++ {
+			divisor := max(tags-1, 1)
+			index := (len(value.Tags)-1)/divisor*j + (len(value.Tags)-1)%divisor*j/divisor
+			size += min(len(value.Tags[index]), stringBudget-size)
+		}
+		sizes[i] = max(512, 128+2*size)
+		if size == stringBudget {
+			sizes[i] = perSeries
+		}
+	}
+	sort.Ints(sizes[:samples])
+	// The upper median avoids extrapolating a single unusually large series.
+	estimate := sizes[samples/2]
+	if estimate == perSeries {
+		return target
+	}
+	return estimate * count
 }
 
 func payloadPrefixForSeries(raw []byte, end int) []byte {

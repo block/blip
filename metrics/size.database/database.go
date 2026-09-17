@@ -151,6 +151,9 @@ func (c *Database) Collect(ctx context.Context, levelName string) ([]blip.Metric
 
 		metrics = append(metrics, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	if c.total[levelName] {
 		total := float64(0)

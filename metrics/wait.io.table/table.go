@@ -21,6 +21,7 @@ const (
 	OPT_TRUNCATE_TABLE   = "truncate-table"
 	OPT_TRUNCATE_TIMEOUT = "truncate-timeout"
 	OPT_ALL              = "all"
+	OPT_GROUP_BY         = "group-by"
 
 	OPT_EXCLUDE_DEFAULT = "mysql.*,information_schema.*,performance_schema.*,sys.*"
 
@@ -82,6 +83,9 @@ func init() {
 type tableOptions struct {
 	query             string
 	params            []interface{}
+	schemaQuery       string
+	schemaParams      []interface{}
+	groupBy           string
 	truncate          bool
 	truncateTimeout   time.Duration
 	stop              bool
@@ -151,6 +155,16 @@ func (t *Table) Help() blip.CollectorHelp {
 					"no":  "Specified metrics",
 				},
 			},
+			OPT_GROUP_BY: {
+				Name:    OPT_GROUP_BY,
+				Desc:    "Group table I/O by table, owning schema, or both",
+				Default: "table",
+				Values: map[string]string{
+					"table":  "One series per table",
+					"schema": "One series per schema",
+					"both":   "Table and schema series",
+				},
+			},
 		},
 		Groups: []blip.CollectorKeyValue{
 			{Key: "db", Value: "the database name for the corresponding table io, or empty string for all dbs"},
@@ -184,6 +198,10 @@ LEVEL:
 		}
 
 		o.query, o.params = TableIoWaitQuery(dom.Options, dom.Metrics)
+		o.groupBy = dom.Options[OPT_GROUP_BY]
+		if o.groupBy == "schema" || o.groupBy == "both" {
+			o.schemaQuery, o.schemaParams = TableIoWaitSchemaQuery(dom.Options, dom.Metrics)
+		}
 
 		if truncate, ok := dom.Options[OPT_TRUNCATE_TABLE]; ok && truncate == "no" {
 			o.truncate = false
@@ -234,7 +252,41 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 		return nil, nil
 	}
 
-	rows, err := t.db.QueryContext(ctx, o.query, o.params...)
+	var metrics []blip.MetricValue
+	if o.groupBy != "schema" {
+		values, err := t.collectQuery(ctx, o.query, o.params, o.metricType, false)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, values...)
+	}
+	if o.schemaQuery != "" {
+		values, err := t.collectQuery(ctx, o.schemaQuery, o.schemaParams, o.metricType, true)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, values...)
+	}
+
+	if o.truncate {
+		conn, err := t.db.Conn(ctx)
+		if err == nil {
+			defer conn.Close()
+			_, err = conn.ExecContext(ctx, o.lockWaitQuery)
+			if err == nil {
+				trCtx, cancelFn := context.WithTimeout(ctx, o.truncateTimeout)
+				defer cancelFn()
+				_, err = conn.ExecContext(trCtx, TRUNCATE_QUERY)
+			}
+		}
+		return o.truncateErrPolicy.TruncateError(err, &o.stop, metrics)
+	}
+
+	return metrics, nil
+}
+
+func (t *Table) collectQuery(ctx context.Context, query string, params []interface{}, metricType byte, schema bool) ([]blip.MetricValue, error) {
+	rows, err := t.db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +309,13 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 	values[1] = new(string)
 
 	for i := 2; i < len(cols); i++ {
-		values[i] = new(int64)
+		if schema {
+			// SUM of unsigned table counters can exceed int64, and schema
+			// metrics are represented as float64 after scanning.
+			values[i] = new(float64)
+		} else {
+			values[i] = new(int64)
+		}
 	}
 
 	for rows.Next() {
@@ -269,38 +327,24 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 		tblName = *values[1].(*string)
 
 		for i := 2; i < len(cols); i++ {
+			group := map[string]string{"db": dbName, "tbl": tblName}
+			if schema {
+				group = map[string]string{"db": dbName}
+			}
 			m := blip.MetricValue{
 				Name:  cols[i],
-				Type:  o.metricType,
-				Group: map[string]string{"db": dbName, "tbl": tblName},
+				Type:  metricType,
+				Group: group,
 			}
-			m.Value = float64(*values[i].(*int64))
+			if schema {
+				m.Value = *values[i].(*float64)
+			} else {
+				m.Value = float64(*values[i].(*int64))
+			}
 			metrics = append(metrics, m)
 		}
 
 	}
 
-	if o.truncate {
-		conn, err := t.db.Conn(ctx)
-		if err == nil {
-			defer conn.Close()
-
-			// Set `lock_wait_timeout` to prevent our query from being blocked for too long
-			// due to metadata locking. We treat a failure to set the lock wait timeout
-			// the same as a truncate timeout, as not setting creates a risk of having a thread
-			// hang for an extended period of time.
-			_, err = conn.ExecContext(ctx, o.lockWaitQuery)
-			if err == nil {
-				trCtx, cancelFn := context.WithTimeout(ctx, o.truncateTimeout)
-				defer cancelFn()
-				_, err = conn.ExecContext(trCtx, TRUNCATE_QUERY)
-			}
-		}
-		// Process any errors (or lack thereof) with the TruncateErrorPolicy as there is special handling
-		// for the metric values that need to be applied, even if there is not an error. See comments
-		// in `TruncateErrorPolicy` for more details.
-		return o.truncateErrPolicy.TruncateError(err, &o.stop, metrics)
-	}
-
-	return metrics, err
+	return metrics, rows.Err()
 }

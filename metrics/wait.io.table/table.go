@@ -309,7 +309,13 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 	values[1] = new(string)
 
 	for i := 2; i < len(cols); i++ {
-		values[i] = new(int64)
+		if schema {
+			// SUM of unsigned table counters can exceed int64, and schema
+			// metrics are represented as float64 after scanning.
+			values[i] = new(float64)
+		} else {
+			values[i] = new(int64)
+		}
 	}
 
 	for rows.Next() {
@@ -330,7 +336,11 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 				Type:  metricType,
 				Group: group,
 			}
-			m.Value = float64(*values[i].(*int64))
+			if schema {
+				m.Value = *values[i].(*float64)
+			} else {
+				m.Value = float64(*values[i].(*int64))
+			}
 			metrics = append(metrics, m)
 		}
 

@@ -4,11 +4,14 @@ package waitiotable_test
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 
 	"github.com/cashapp/blip/v2"
 	waitiotable "github.com/cashapp/blip/v2/metrics/wait.io.table"
 	"github.com/cashapp/blip/v2/test"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-test/deep"
 )
 
@@ -71,7 +74,11 @@ func TestTableIoQuery(t *testing.T) {
 func TestCollectSchemaRollupMySQL80(t *testing.T) {
 	_, db, err := test.Connection("mysql80")
 	if err != nil {
-		t.Skip("mysql80 not running")
+		var netErr *net.OpError
+		if errors.As(err, &netErr) {
+			t.Skipf("mysql80 not running: %v", err)
+		}
+		t.Fatalf("connect to mysql80: %v", err)
 	}
 	defer db.Close()
 

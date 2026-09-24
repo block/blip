@@ -3,7 +3,7 @@ weight: 100
 ---
 
 Following are _all_ Blip domains and the metrics collected in each.
-Only domains with a Blip version are collected.
+Only domains with a Blip version or `Unreleased` are collected.
 The rest are reserved for future use.
 
 |Domain|Metrics|Blip Version|
@@ -65,6 +65,7 @@ The rest are reserved for future use.
 |status.user|Status by user||
 |stmt|Statements||
 |[`stmt.current`](domains#stmtcurrent)|Current statements|v1.0.0|
+|[`stmt.schema`](domains#stmtschema)|Statement counters by schema (`events_statements_summary_by_digest`)|Unreleased|
 |stmt.history|Historical statements||
 |thd|Threads||
 |[`tls`](domains#tls)|TLS (SSL) status and configuration|v1.0.0|

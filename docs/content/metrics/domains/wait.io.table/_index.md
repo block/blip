@@ -70,13 +70,23 @@ level:
 All Blip metric names are lowercase when reported.
 {{< /hint >}}
 
-Metrics are [grouped](#group-keys) by database and table.
+By default, metrics are [grouped](#group-keys) by database and table. Set `group-by: schema` to report one series per database instead.
 
 ## Derived Metrics
 
 None.
 
 ## Options
+
+### `group-by`
+
+|Value|Default|Description|
+|-----|-------|-----------|
+|table|&check;|One series per table, grouped by `db` and `tbl`|
+|schema||One series per schema, grouped by `db`|
+|both||Table and schema series|
+
+Schema rollups sum counts and total wait times across tables. Minimum and maximum times span the tables with events; averages are weighted by the event count. These are table handler waits, not physical disk I/O or complete query latency.
 
 ### `all`
 
@@ -127,7 +137,8 @@ Normally, truncating a table is nearly instantaneous, but metadata locks can blo
 
 |Key|Value|
 |---|---|
-|`db`, `tbl`|Database and table name|
+|`db`, `tbl`|Database and table name for table series|
+|`db`|Database name for schema series|
 
 ## Meta
 

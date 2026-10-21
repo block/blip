@@ -33,6 +33,7 @@ const (
 type Lag struct {
 	db                          *sql.DB
 	lagReader                   heartbeat.Reader
+	stopReader                  func() // stops lagReader; returned by Prepare as cleanup
 	lagWriterIn                 map[string]string
 	dropNoHeartbeat             map[string]bool
 	dropNotAReplica             map[string]bool
@@ -147,10 +148,19 @@ func (c *Lag) Help() blip.CollectorHelp {
 // lag from a Blip heartbeat and from Performance Schema. And since this
 // domain collects only one metric (repl.lag.current), there's no need to
 // collect different metrics at different frequencies.
-func (c *Lag) Prepare(ctx context.Context, plan blip.Plan) (func(), error) {
-	configured := ""   // set after first level to its writer value
-	var cleanup func() // Blip heartbeat reader func, else nil
-	var err error
+//
+// If lag is collected from a Blip heartbeat, the returned cleanup func stops
+// the heartbeat reader; else it's nil.
+func (c *Lag) Prepare(ctx context.Context, plan blip.Plan) (cleanup func(), err error) {
+	configured := "" // set after first level to its writer value
+
+	// The engine discards this collector if Prepare fails, so stop the
+	// reader if it was started before the error.
+	defer func() {
+		if err != nil && c.stopReader != nil {
+			c.stopReader()
+		}
+	}()
 
 LEVEL:
 	for levelName, level := range plan.Levels {
@@ -207,7 +217,7 @@ LEVEL:
 		c.dropNotAReplica[levelName] = !blip.Bool(dom.Options[OPT_REPORT_NOT_A_REPLICA])
 		c.defaultChannelNameOverrides[levelName] = dom.Options[OPT_DEFAULT_CHANNEL_NAME]
 		if err := c.verifyReplCheck(ctx, dom.Options[OPT_REPL_CHECK]); err != nil {
-			return cleanup, err
+			return nil, err
 		}
 		c.replCheck = dom.Options[OPT_REPL_CHECK]
 	}
@@ -244,8 +254,10 @@ func (c *Lag) Collect(ctx context.Context, levelName string) ([]blip.MetricValue
 // //////////////////////////////////////////////////////////////////////////
 
 func (c *Lag) prepareBlip(levelName string, monitorID string, planName string, options map[string]string) (func(), error) {
+	// Prepare calls this func for each level that collects lag. Return the
+	// same cleanup func for every level, else the reader is never stopped.
 	if c.lagReader != nil {
-		return nil, nil
+		return c.stopReader, nil
 	}
 
 	c.dropNoHeartbeat[levelName] = !blip.Bool(options[OPT_REPORT_NO_HEARTBEAT])
@@ -279,12 +291,11 @@ func (c *Lag) prepareBlip(levelName string, monitorID string, planName string, o
 	go c.lagReader.Start()
 	blip.Debug("%s: started reader: %s/%s (network latency: %s)", monitorID, planName, levelName, netLatency)
 	c.lagWriterIn[levelName] = LAG_WRITER_BLIP
-	var cleanup func()
-	cleanup = func() {
+	c.stopReader = func() {
 		blip.Debug("%s: stopping reader", monitorID)
 		c.lagReader.Stop()
 	}
-	return cleanup, nil
+	return c.stopReader, nil
 }
 
 func (c *Lag) collectBlip(ctx context.Context, levelName string) ([]blip.MetricValue, error) {

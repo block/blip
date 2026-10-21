@@ -89,6 +89,18 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	}
 
 	// ----------------------------------------------------------------------
+	// Connect timeout
+
+	// Bound how long the driver waits to dial MySQL (DSN param "timeout").
+	// Without it, the driver dials with no timeout, so an unreachable host
+	// (e.g. one that drops packets) blocks each new connection for as long
+	// as the kernel retries the TCP SYN, which is minutes on Linux.
+	timeout, err := connectTimeout(cfg.TimeoutConnect)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w", cfg.MonitorId, err)
+	}
+
+	// ----------------------------------------------------------------------
 	// TCP or Unix socket
 
 	net := ""
@@ -133,6 +145,9 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	// Load TLS
 
 	params := []string{"parseTime=true", "interpolateParams=true"}
+	if timeout > 0 {
+		params = append(params, "timeout="+timeout.String())
+	}
 
 	// Go says "either ServerName or InsecureSkipVerify must be specified".
 	// This is a pathological case: socket and TLS but no hostname to verify
@@ -363,4 +378,23 @@ func RedactedDSN(dsn string) string {
 	redactedPassword.Passwd = "..."
 	return redactedPassword.FormatDSN()
 
+}
+
+// connectTimeout parses config.monitor.timeout-connect into the MySQL driver
+// dial timeout. An empty value returns the default (DEFAULT_MONITOR_TIMEOUT_CONNECT)
+// because callers can pass a monitor config without defaults applied. A zero
+// value ("0" or "0s") explicitly disables the timeout, which is the driver
+// default: the dial waits on the operating system's TCP connect timeout.
+func connectTimeout(s string) (time.Duration, error) {
+	if s == "" {
+		s = blip.DEFAULT_MONITOR_TIMEOUT_CONNECT
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid timeout-connect %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid timeout-connect %q: must be zero or greater", s)
+	}
+	return d, nil
 }

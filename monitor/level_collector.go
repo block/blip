@@ -231,8 +231,44 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 	interval := uint(0)
 	ticker := time.NewTicker(td)
 	defer ticker.Stop()
+
+	// stop stops changePlan goroutine (if any) and prevents new ones in the
+	// pathological case that the LCH calls ChangePlan while the LCO is
+	// terminating, then stops the engine
+	stop := func() {
+		blip.Debug("stopChan closed s=%d interval=%d", s, interval)
+		c.stopChangePlan()
+		c.engine.Stop() // stop all collectors and run their cleanup func
+	}
+
 	var lastTick time.Time
-	for startTime := range ticker.C {
+	countTicks := false // see below
+	for {
+		// Wait for the next tick or stop, whichever is first, so stopping
+		// doesn't wait up to one tick. Stop closes stopChan.
+		//
+		// Tests also send values on a buffered stopChan to run a number of
+		// ticks: each tick receives one value, and the close after the last
+		// value stops Run on the next tick. Once a value is received, Run
+		// keeps that one-per-tick behavior: the value counts for the next
+		// tick, and later values and the close are received after each tick.
+		var startTime time.Time
+		gotValue := false
+		if countTicks {
+			startTime = <-ticker.C
+		} else {
+			select {
+			case _, ok := <-stopChan:
+				if !ok {
+					stop()
+					return nil
+				}
+				countTicks = true
+				gotValue = true
+				startTime = <-ticker.C
+			case startTime = <-ticker.C:
+			}
+		}
 		s = s + te
 
 		// Count ticks dropped while the previous iteration was blocked, usually
@@ -243,20 +279,18 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 		}
 		lastTick = startTime
 
-		// Was monitor stopped?
-		select {
-		case _, ok := <-stopChan: // yes, return immediately
-			// Stop changePlan goroutine (if any) and prevent new ones in the
-			// pathological case that the LCH calls ChangePlan while the LCO
-			// is terminating
-			if ok {
-				break
+		// Was monitor stopped? Check again because select picks randomly
+		// when both the tick and stop are ready.
+		if !gotValue {
+			select {
+			case _, ok := <-stopChan: // yes, return immediately
+				if ok {
+					break
+				}
+				stop()
+				return nil
+			default: // no
 			}
-			blip.Debug("stopChan closed at %s s=%d interval=%d", startTime, s, interval)
-			c.stopChangePlan()
-			c.engine.Stop() // stop all collectors and run their cleanup func
-			return nil
-		default: // no
 		}
 
 		// Paused because no plan is set or it's being changed?
@@ -286,7 +320,6 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 
 		c.stateMux.Unlock() // -- UNLOCK --
 	}
-	return nil
 }
 
 // stopChangePlan prevents new plan changes, cancels the current plan change,

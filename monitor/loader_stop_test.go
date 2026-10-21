@@ -1062,3 +1062,28 @@ func TestLoaderStartClearsHeld(t *testing.T) {
 	setIds(st, &ids)
 	require.NoError(t, loader.Load(context.Background()))
 }
+
+func TestLoaderStopDoesNotWaitForTick(t *testing.T) {
+	// With the real 1s LCO tick, a stop must not wait for the next tick.
+	// Before the LCO selected on stop, stops took 0 to 1s (0.5s on average),
+	// depending on when in the tick they arrived.
+	ids := []string{"tick1"}
+	st, loader := setupStopTest(t, "5s", &ids, nil)
+	defer status.RemoveMonitor("tick1")
+	monitor.TickerDuration(time.Second, time.Second) // setupStopTest restores the test tick
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "tick1")
+
+	for i := 0; i < 4; i++ {
+		time.Sleep(time.Duration(100+200*i) * time.Millisecond) // vary the offset into the tick
+		t0 := time.Now()
+		require.NoError(t, loader.Stop("tick1", true))
+		d := time.Since(t0)
+		t.Logf("stop %d: %s", i, d)
+		assert.Less(t, d, 250*time.Millisecond, "stop %d waited for the LCO tick", i)
+		require.NoError(t, loader.Start("tick1", true))
+		waitPrepared(t, st, i+2, "tick1")
+	}
+}

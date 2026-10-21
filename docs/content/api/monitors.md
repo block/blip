@@ -47,6 +47,8 @@ Error message on 4xx or 5xx status code.
 Starts one monitor.
 `id` query key is required.
 
+If the monitor is still stopping, it starts when it has stopped.
+
 ### Query
 
 |Key|Value|Required|Purpose|
@@ -70,6 +72,8 @@ Stops one monitor.
 
 The monitor is stopped but not unloaded, which means it reported by status endpoints.
 
+The request waits for the monitor to stop, but no longer than [`config.monitor-loader.stop-timeout`]({{< ref "/config/config-file#stop-timeout" >}}).
+
 ### Query
 
 |Key|Value|Required|Purpose|
@@ -81,3 +85,7 @@ The monitor is stopped but not unloaded, which means it reported by status endpo
 None on success (200 status code).
 
 Error message on 4xx or 5xx status code.
+
+### Status Codes
+
+<strong>202</strong>: Monitor is still stopping after the stop timeout; it keeps stopping in the background

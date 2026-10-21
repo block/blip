@@ -341,7 +341,7 @@ func TestMonitorStartupErrorStopsPartialSubsystemsBeforeClosingProvider(t *testi
 		}
 	}
 
-	err = monitor.startup()
+	err = monitor.startup(monitor.runLoopChan)
 	if err == nil || !strings.Contains(err.Error(), "expected 1") {
 		t.Fatalf("startup error = %v, expected invalid exporter level count", err)
 	}

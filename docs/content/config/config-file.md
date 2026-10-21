@@ -124,6 +124,7 @@ monitor-loader:
     disable-auto: false
     disable-auto-root: false
   stop-loss: ""
+  stop-timeout: "3s"
 ```
 
 #### aws
@@ -178,6 +179,21 @@ The `local` subsection has only two variables:
 |**Default value**||
 
 The `stop-loss` variable enables the [stop-lost feature]({{< ref "/monitors/loading#stop-loss" >}}).
+
+##### `stop-timeout`
+
+| | |
+|-|-|
+|**Type**|string|
+|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration) greater than zero|
+|**Default value**|`3s`|
+
+The `stop-timeout` variable sets how long Blip waits for a monitor to stop when it's unloaded or stopped by the API.
+Blip stops monitors in the background and in parallel, so this doesn't limit how long a monitor can take to stop; it limits how long a reload or stop request waits for it.
+A monitor that hasn't stopped by then keeps stopping in the background, and Blip reports it with event `monitor-stop-timeout` and monitor status `error:stop`.
+If the monitor is reloaded with the same ID, the new monitor doesn't start until the old one has stopped.
+
+A monitor normally stops within about 1 second (one collection tick plus a collection in progress).
 
 ---
 

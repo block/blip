@@ -350,11 +350,16 @@ func (c *ConfigHTTP) ApplyDefaults(b Config) {
 // --------------------------------------------------------------------------
 
 type ConfigMonitorLoader struct {
-	Files    []string                 `yaml:"files,omitempty"`
-	StopLoss string                   `yaml:"stop-loss,omitempty"`
-	AWS      ConfigMonitorLoaderAWS   `yaml:"aws,omitempty"`
-	Local    ConfigMonitorLoaderLocal `yaml:"local,omitempty"`
+	Files       []string                 `yaml:"files,omitempty"`
+	StopLoss    string                   `yaml:"stop-loss,omitempty"`
+	StopTimeout string                   `yaml:"stop-timeout,omitempty"`
+	AWS         ConfigMonitorLoaderAWS   `yaml:"aws,omitempty"`
+	Local       ConfigMonitorLoaderLocal `yaml:"local,omitempty"`
 }
+
+const (
+	DEFAULT_MONITOR_LOADER_STOP_TIMEOUT = "3s"
+)
 
 type ConfigMonitorLoaderAWS struct {
 	Regions []string `yaml:"regions,omitempty"`
@@ -375,11 +380,16 @@ type ConfigMonitorLoaderLocal struct {
 }
 
 func DefaultConfigMonitorLoader() ConfigMonitorLoader {
-	return ConfigMonitorLoader{}
+	return ConfigMonitorLoader{
+		StopTimeout: DEFAULT_MONITOR_LOADER_STOP_TIMEOUT,
+	}
 }
 
 func (c ConfigMonitorLoader) Validate() error {
 	if _, _, err := StopLoss(c.StopLoss); err != nil {
+		return err
+	}
+	if err := validFreq(c.StopTimeout, "monitor-loader.stop-timeout"); err != nil {
 		return err
 	}
 	return nil
@@ -387,12 +397,16 @@ func (c ConfigMonitorLoader) Validate() error {
 
 func (c *ConfigMonitorLoader) InterpolateEnvVars() {
 	c.StopLoss = interpolateEnv(c.StopLoss)
+	c.StopTimeout = interpolateEnv(c.StopTimeout)
 	for i := range c.Files {
 		c.Files[i] = interpolateEnv(c.Files[i])
 	}
 }
 
 func (c *ConfigMonitorLoader) ApplyDefaults(b Config) {
+	if c.StopTimeout == "" {
+		c.StopTimeout = DEFAULT_MONITOR_LOADER_STOP_TIMEOUT
+	}
 }
 
 // ///////////////////////////////////////////////////////////////////////////

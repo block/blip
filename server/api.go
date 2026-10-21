@@ -168,12 +168,14 @@ func (api *API) monitorsReload(w http.ResponseWriter, r *http.Request) {
 
 func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("%v", r)
-	monitorId, mon, ok := api.monitorId(w, r)
+	monitorId, _, ok := api.monitorId(w, r)
 	if !ok {
 		return // monitorId() wrote error response
 	}
 	blip.Debug("start %s", monitorId)
-	if err := mon.Start(); err != nil {
+	// Start through the loader, not Monitor.Start, so the loader knows the
+	// monitor is running and doesn't start it while it's still stopping
+	if err := api.monitorLoader.Start(monitorId, true); err != nil {
 		errMsg := html.EscapeString(fmt.Sprintf("Error starting monitor %s: %s", html.EscapeString(monitorId), err))
 		http.Error(w, errMsg, http.StatusConflict)
 		return
@@ -183,12 +185,22 @@ func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 
 func (api *API) monitorsStop(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("%v", r)
-	monitorId, mon, ok := api.monitorId(w, r)
+	monitorId, _, ok := api.monitorId(w, r)
 	if !ok {
 		return // monitorId() wrote error response
 	}
 	blip.Debug("stop %s", monitorId)
-	mon.Stop() // Stopy only returns nil
+	// Stop through the loader, not Monitor.Stop, so the loader knows the
+	// monitor is stopped and the wait for it to stop is bounded
+	if err := api.monitorLoader.Stop(monitorId, true); err != nil {
+		if err == monitor.ErrStopTimeout {
+			http.Error(w, fmt.Sprintf("monitor %s is still stopping", html.EscapeString(monitorId)), http.StatusAccepted)
+			return
+		}
+		errMsg := html.EscapeString(fmt.Sprintf("Error stopping monitor %s: %s", html.EscapeString(monitorId), err))
+		http.Error(w, errMsg, http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

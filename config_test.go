@@ -28,6 +28,20 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestConfigMonitorLoaderStopTimeout(t *testing.T) {
+	c := blip.ConfigMonitorLoader{}
+	c.ApplyDefaults(blip.DefaultConfig())
+	assert.Equal(t, blip.DEFAULT_MONITOR_LOADER_STOP_TIMEOUT, c.StopTimeout)
+	assert.NoError(t, c.Validate())
+
+	for _, v := range []string{"0", "-1s", "3"} {
+		c.StopTimeout = v
+		assert.Error(t, c.Validate(), "stop-timeout %q", v)
+	}
+	c.StopTimeout = "500ms"
+	assert.NoError(t, c.Validate())
+}
+
 // TestEnvInterpolation verifies that env vars with special characters, most notably $, are properly interpolated
 func TestEnvInterpolation(t *testing.T) {
 	envKey := "blip_test_TestEnvInterpolation"

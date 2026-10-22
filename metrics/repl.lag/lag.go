@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -155,17 +156,17 @@ func (c *Lag) Help() blip.CollectorHelp {
 // domain collects only one metric (repl.lag.current), there's no need to
 // collect different metrics at different frequencies.
 //
-// The first level sets up the writer. Every level must use the same writer,
-// but the report-no-heartbeat, report-not-a-replica, and default-channel-name
-// options are per level.
+// One level sets up the writer: the first level, by name, that sets the
+// writer option to pfs or blip; else the first level that collects lag, which
+// auto-detects the writer. Levels that don't set the writer, or set it to
+// auto, use that writer. It's an error if one level sets pfs and another sets
+// blip. The report-no-heartbeat, report-not-a-replica, and
+// default-channel-name options are per level.
 //
 // If lag is collected from a Blip heartbeat, the returned cleanup func stops
 // the heartbeat reader; else it's nil. On error, Prepare stops the reader
 // and returns a nil cleanup func, as required by blip.Collector.
 func (c *Lag) Prepare(ctx context.Context, plan blip.Plan) (cleanup func(), err error) {
-	configured := "" // writer option of first level, set after it's configured
-	writer := ""     // writer that configured resolved to: pfs or blip
-
 	// The engine discards this collector if Prepare fails, so stop the
 	// reader if it was started before the error.
 	defer func() {
@@ -174,41 +175,55 @@ func (c *Lag) Prepare(ctx context.Context, plan blip.Plan) (cleanup func(), err 
 		}
 	}()
 
-LEVEL:
+	// Levels that collect lag, sorted so the result doesn't depend on map order
+	levels := []string{}
 	for levelName, level := range plan.Levels {
-		dom, ok := level.Collect[DOMAIN]
-		if !ok {
-			continue LEVEL // not collected in this level
+		if _, ok := level.Collect[DOMAIN]; ok {
+			levels = append(levels, levelName)
 		}
+	}
+	if len(levels) == 0 {
+		return nil, nil
+	}
+	sort.Strings(levels)
 
-		opt := dom.Options[OPT_WRITER]
-		if opt == "" {
-			opt = "auto" // default
+	// Find the level that sets up the writer
+	configLevel := levels[0]
+	writer := "auto"
+	for _, levelName := range levels {
+		opt := plan.Levels[levelName].Collect[DOMAIN].Options[OPT_WRITER]
+		switch opt {
+		case "", "auto":
+			continue
+		case LAG_WRITER_PFS, LAG_WRITER_BLIP:
+		default:
+			return nil, fmt.Errorf("invalid lag writer: %q; valid values: auto, pfs, blip", opt)
 		}
-
-		// Set up the writer at the first level. At other levels, the same writer
-		// is ok and expected (lag collected at multiple levels). But if writer
-		// is different, that's an error.
-		if configured == "" {
-			if writer, err = c.configure(ctx, levelName, plan, opt, dom.Options); err != nil {
-				return nil, err
-			}
-			configured = opt
-		} else if opt != configured {
-			return nil, fmt.Errorf("different writer configuration: %s != %s", configured, opt)
+		if writer == "auto" {
+			configLevel = levelName
+			writer = opt
+		} else if opt != writer {
+			return nil, fmt.Errorf("different writer configuration: %s at level %s != %s at level %s", writer, configLevel, opt, levelName)
 		}
+	}
 
+	if writer, err = c.configure(ctx, configLevel, plan, writer, plan.Levels[configLevel].Collect[DOMAIN].Options); err != nil {
+		return nil, err
+	}
+
+	for _, levelName := range levels {
+		options := plan.Levels[levelName].Collect[DOMAIN].Options
 		c.lagWriterIn[levelName] = writer // collect at this level
-		c.dropNoHeartbeat[levelName] = !blip.Bool(dom.Options[OPT_REPORT_NO_HEARTBEAT])
-		c.dropNotAReplica[levelName] = !blip.Bool(dom.Options[OPT_REPORT_NOT_A_REPLICA])
-		c.defaultChannelNameOverrides[levelName] = dom.Options[OPT_DEFAULT_CHANNEL_NAME]
+		c.dropNoHeartbeat[levelName] = !blip.Bool(options[OPT_REPORT_NO_HEARTBEAT])
+		c.dropNotAReplica[levelName] = !blip.Bool(options[OPT_REPORT_NOT_A_REPLICA])
+		c.defaultChannelNameOverrides[levelName] = options[OPT_DEFAULT_CHANNEL_NAME]
 	}
 
 	return c.stopReader, nil
 }
 
-// configure sets up the writer from the options of the first level that
-// collects lag. It returns the writer, which is never auto.
+// configure sets up the writer from the options of one level. It returns the
+// writer, which is never auto.
 func (c *Lag) configure(ctx context.Context, levelName string, plan blip.Plan, writer string, options map[string]string) (string, error) {
 	blip.Debug("repl.lag: config from level %s", levelName)
 	switch writer {
@@ -219,7 +234,7 @@ func (c *Lag) configure(ctx context.Context, levelName string, plan blip.Plan, w
 		}
 	case LAG_WRITER_BLIP:
 		c.prepareBlip(levelName, plan.MonitorId, plan.Name, options)
-	case "auto":
+	default: // auto
 		// Try PFS first, then Blip heartbeat
 		if _, err := c.collectPFS(ctx, levelName); err == nil {
 			blip.Debug("repl.lag auto-detected PFS")
@@ -229,8 +244,6 @@ func (c *Lag) configure(ctx context.Context, levelName string, plan blip.Plan, w
 			blip.Debug("repl.lag auto-detected Blip heartbeat")
 			writer = LAG_WRITER_BLIP
 		}
-	default:
-		return "", fmt.Errorf("invalid lag writer: %q; valid values: auto, pfs, blip", writer)
 	}
 
 	if err := c.verifyReplCheck(ctx, options[OPT_REPL_CHECK]); err != nil {

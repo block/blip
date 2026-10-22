@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,31 +294,59 @@ func TestPrepareBlipPassesReplCheckToReader(t *testing.T) {
 	assert.Equal(t, "read_only", args[0].ReplCheck)
 }
 
-func TestPrepareRejectsDifferentWriters(t *testing.T) {
-	// The writer must be the same at every level. With an unreachable database,
-	// auto resolves to blip, but it's still a different writer configuration.
-	// No writer is the same as auto.
+func TestPrepareWritersAtDifferentLevels(t *testing.T) {
+	// Levels that don't set the writer, or set auto, use the writer set at
+	// another level. Plans have them because levels inherit options only from
+	// some lower levels. But pfs at one level and blip at another is an error.
+	// Each pair is tested in both orders, and many times because Prepare
+	// ranges over a map.
 	tests := []struct {
 		fast, slow string
-		ok         bool
+		writer     string // expected at every level, or "" if Prepare fails
+		err        string // expected error, if writer is ""
 	}{
-		{fast: LAG_WRITER_BLIP, slow: "auto", ok: false},
-		{fast: "auto", slow: LAG_WRITER_BLIP, ok: false},
-		{fast: LAG_WRITER_BLIP, slow: LAG_WRITER_BLIP, ok: true},
-		{fast: "", slow: "auto", ok: true},
+		{fast: "", slow: LAG_WRITER_BLIP, writer: LAG_WRITER_BLIP},
+		{fast: LAG_WRITER_BLIP, slow: "", writer: LAG_WRITER_BLIP},
+		{fast: "auto", slow: LAG_WRITER_BLIP, writer: LAG_WRITER_BLIP},
+		{fast: LAG_WRITER_BLIP, slow: "auto", writer: LAG_WRITER_BLIP},
+		{fast: LAG_WRITER_BLIP, slow: LAG_WRITER_BLIP, writer: LAG_WRITER_BLIP},
+		{fast: "", slow: "auto", writer: LAG_WRITER_BLIP}, // auto-detected: PFS fails because database is unreachable
+		{fast: LAG_WRITER_PFS, slow: LAG_WRITER_BLIP, err: "different writer configuration"},
+		{fast: LAG_WRITER_BLIP, slow: LAG_WRITER_PFS, err: "different writer configuration"},
+		// pfs is set up, not auto-detected or blip, so it fails because the
+		// database is unreachable. See TestPrepareAutoAndPFSOnMySQL80.
+		{fast: "auto", slow: LAG_WRITER_PFS, err: "could not check replication lag"},
+		{fast: LAG_WRITER_PFS, slow: "", err: "could not check replication lag"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.fast+"/"+tt.slow, func(t *testing.T) {
-			c := NewLag(unreachableDB(t))
-			c.newReader = func(heartbeat.BlipReaderArgs) heartbeat.Reader { return fakeReader{} }
-			plan := blipPlan("fast", "slow")
-			plan.Levels["fast"].Collect[DOMAIN].Options[OPT_WRITER] = tt.fast
-			plan.Levels["slow"].Collect[DOMAIN].Options[OPT_WRITER] = tt.slow
-			_, err := c.Prepare(context.Background(), plan)
-			if tt.ok {
-				assert.NoError(t, err)
-			} else {
-				assert.ErrorContains(t, err, "different writer configuration")
+			for i := 0; i < 20; i++ {
+				c := NewLag(unreachableDB(t))
+				readers := 0
+				c.newReader = func(heartbeat.BlipReaderArgs) heartbeat.Reader {
+					readers++
+					return fakeReader{}
+				}
+				plan := blipPlan("fast", "slow")
+				plan.Levels["fast"].Collect[DOMAIN].Options[OPT_WRITER] = tt.fast
+				plan.Levels["slow"].Collect[DOMAIN].Options[OPT_WRITER] = tt.slow
+				_, err := c.Prepare(context.Background(), plan)
+				if tt.writer == "" {
+					if err == nil || !strings.Contains(err.Error(), tt.err) {
+						t.Fatalf("run %d: got error %v, expected %q", i, err, tt.err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("run %d: %s", i, err)
+				}
+				if readers != 1 {
+					t.Fatalf("run %d: Prepare made %d heartbeat readers, expected 1", i, readers)
+				}
+				want := map[string]string{"fast": tt.writer, "slow": tt.writer}
+				if !assert.Equal(t, want, c.lagWriterIn, "run %d", i) {
+					return
+				}
 			}
 		})
 	}
@@ -356,7 +385,7 @@ func TestPrepareSetsOptionsAtEveryLevel(t *testing.T) {
 	}
 }
 
-func TestPrepareRejectsPFSAndBlipWriters(t *testing.T) {
+func TestPrepareAutoAndPFSOnMySQL80(t *testing.T) {
 	_, db, err := test.Connection("mysql80")
 	if err != nil {
 		if test.Build {
@@ -367,10 +396,23 @@ func TestPrepareRejectsPFSAndBlipWriters(t *testing.T) {
 	}
 	defer db.Close()
 
-	c := NewLag(db)
-	plan := blipPlan("fast", "slow")
-	plan.Levels["fast"].Collect[DOMAIN].Options[OPT_WRITER] = LAG_WRITER_PFS
-	cleanup, err := c.Prepare(context.Background(), plan)
-	stopReader(t, cleanup)
-	assert.ErrorContains(t, err, "different writer configuration")
+	// Same as auto and blip in TestPrepareWritersAtDifferentLevels, but pfs
+	// needs MySQL
+	for _, writers := range [][2]string{{"auto", LAG_WRITER_PFS}, {LAG_WRITER_PFS, ""}} {
+		for i := 0; i < 20; i++ {
+			c := NewLag(db)
+			plan := blipPlan("fast", "slow")
+			plan.Levels["fast"].Collect[DOMAIN].Options[OPT_WRITER] = writers[0]
+			plan.Levels["slow"].Collect[DOMAIN].Options[OPT_WRITER] = writers[1]
+			cleanup, err := c.Prepare(context.Background(), plan)
+			stopReader(t, cleanup)
+			if err != nil {
+				t.Fatalf("%v run %d: %s", writers, i, err)
+			}
+			if c.lagReader != nil {
+				t.Fatalf("%v run %d: Prepare made a heartbeat reader for pfs", writers, i)
+			}
+			assert.Equal(t, map[string]string{"fast": LAG_WRITER_PFS, "slow": LAG_WRITER_PFS}, c.lagWriterIn)
+		}
+	}
 }

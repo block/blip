@@ -61,7 +61,7 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 * Added validation of the retry options: `buffer-size` must be from 1 to 10000, `send-timeout` must be greater than zero and at most 1m, and `send-retry-wait` must be greater than zero. Other values prevent the monitor from loading. Previously a built-in sink rejected any retry option, so no config that loaded before is affected.
 * Changed the retry sink to stop waiting `send-retry-wait` between sends when `send-timeout` expires. Previously a send cycle could run past `send-timeout` by up to one `send-retry-wait`.
 * Added `sink.RetryArgs.Validate` and the `sink.MAX_RETRY_BUFFER_SIZE` and `sink.MAX_RETRY_SEND_TIMEOUT` constants. `sink.NewRetry` doesn't call `Validate`, so custom sinks that build `RetryArgs` from user input should call it first.
-* Fixed `repl.lag` at multiple levels with the Blip heartbeat writer: `report-no-heartbeat` and `report-not-a-replica` now apply at every level, not only at one random level, and the heartbeat reader now uses `repl-check`. Plans that set a different `writer` at different levels (an unset `writer` is `auto`) now fail to prepare.
+* Fixed `repl.lag` at multiple levels with the Blip heartbeat writer: `report-no-heartbeat` and `report-not-a-replica` now apply at every level, not only at one random level, and the heartbeat reader now uses `repl-check`. Levels that don't set `writer`, or set it to `auto`, use the writer set at another level. Plans that set `writer` to `pfs` at one level and `blip` at another now fail to prepare.
 
 ### v2.1.0 (10 Aug 2026)
 

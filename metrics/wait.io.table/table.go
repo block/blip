@@ -297,7 +297,7 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 
 	cols, err := rows.Columns()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get columns for wait.io.table: %v", err)
+		return nil, fmt.Errorf("Failed to get columns for wait.io.table: %w", err)
 	}
 
 	values = make([]interface{}, len(cols))

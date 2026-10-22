@@ -5,6 +5,8 @@ package repllag
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/test"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 func TestPrepareForSingleLevelAndNoSourceOnMySQL80(t *testing.T) {
@@ -200,5 +203,28 @@ func TestPrepareBlipErrorStopsReader(t *testing.T) {
 	}
 	if got := test.WaitGoroutines(readerFunc, 0, readerTimeout); got != 0 {
 		t.Errorf("%d heartbeat readers running after Prepare error, expected 0", got)
+	}
+}
+
+func TestCollectPFSWrapsQueryError(t *testing.T) {
+	// One case per query in collectPFS: the replica check query (only run
+	// when the repl-check option is set) and the lag query
+	for _, replCheck := range []string{"server_id", ""} {
+		t.Run("replCheck="+replCheck, func(t *testing.T) {
+			db := mock.ErrorDB(fmt.Errorf("query: %w", context.DeadlineExceeded))
+			defer db.Close()
+
+			c := NewLag(db)
+			c.lagWriterIn["kpi"] = LAG_WRITER_PFS
+			c.replCheck = replCheck
+
+			_, err := c.Collect(context.Background(), "kpi")
+			if err == nil {
+				t.Fatal("Collect returned nil error, expected query error")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("errors.Is(err, context.DeadlineExceeded) = false, expected true; err: %v", err)
+			}
+		})
 	}
 }

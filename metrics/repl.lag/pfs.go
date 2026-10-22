@@ -84,7 +84,7 @@ func (c *Lag) collectPFS(ctx context.Context, levelName string) ([]blip.MetricVa
 	if c.replCheck != "" {
 		query := "SELECT @@" + c.replCheck
 		if err := c.db.QueryRowContext(ctx, query).Scan(&isRepl); err != nil {
-			return nil, fmt.Errorf("checking if instance is replica failed, please check value of %s. Err: %s", OPT_REPL_CHECK, err.Error())
+			return nil, fmt.Errorf("checking if instance is replica failed, please check value of %s. Err: %w", OPT_REPL_CHECK, err)
 		}
 	}
 
@@ -94,7 +94,7 @@ func (c *Lag) collectPFS(ctx context.Context, levelName string) ([]blip.MetricVa
 
 	rows, err := c.db.QueryContext(context.Background(), mySQL8LagQuery)
 	if err != nil {
-		return nil, fmt.Errorf("could not check replication lag, check that the host is a MySQL 8.0 replica, and that performance_schema is enabled. Err: %s", err.Error())
+		return nil, fmt.Errorf("could not check replication lag, check that the host is a MySQL 8.0 replica, and that performance_schema is enabled. Err: %w", err)
 	}
 
 	// Group workers by channel name

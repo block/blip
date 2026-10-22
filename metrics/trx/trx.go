@@ -97,7 +97,7 @@ func (c *Trx) Collect(ctx context.Context, levelName string) ([]blip.MetricValue
 	var t float64
 	err := c.db.QueryRowContext(ctx, OLDEST_TRX_QUERY).Scan(&t)
 	if err != nil {
-		return nil, fmt.Errorf("%s failed: %s", OLDEST_TRX_QUERY, err)
+		return nil, fmt.Errorf("%s failed: %w", OLDEST_TRX_QUERY, err)
 	}
 
 	metrics := []blip.MetricValue{}

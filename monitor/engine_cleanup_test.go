@@ -16,7 +16,10 @@ import (
 	"github.com/cashapp/blip/v2/test/mock"
 )
 
-const heartbeatReaderFunc = "heartbeat.(*BlipReader).run"
+const (
+	heartbeatReaderFunc    = "heartbeat.(*BlipReader).run"
+	heartbeatReaderTimeout = 5 * time.Second // > heartbeat.ReadTimeout: reader exits after an in-flight query
+)
 
 func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 	_, db, err := test.Connection(test.DefaultMySQLVersion)
@@ -43,18 +46,22 @@ func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 		},
 	}
 
-	before := test.Goroutines(heartbeatReaderFunc)
+	// Count only readers started by this test: wait for readers stopped by
+	// earlier tests to exit
+	if got := test.WaitGoroutines(heartbeatReaderFunc, 0, heartbeatReaderTimeout); got != 0 {
+		t.Fatalf("%d heartbeat readers running before test, expected 0 (leaked by an earlier test?)", got)
+	}
 	for i := 0; i < 3; i++ {
 		engine := NewEngine(blip.ConfigMonitor{MonitorId: plan.MonitorId}, db)
 		if err := engine.Prepare(context.Background(), plan, func() {}, func() {}); err != nil {
 			t.Fatal(err)
 		}
-		if got := test.WaitGoroutines(heartbeatReaderFunc, before+1, time.Second); got != before+1 {
-			t.Fatalf("cycle %d: %d heartbeat readers running after Prepare, expected %d", i, got, before+1)
+		if got := test.WaitGoroutines(heartbeatReaderFunc, 1, heartbeatReaderTimeout); got != 1 {
+			t.Fatalf("cycle %d: %d heartbeat readers running after Prepare, expected 1", i, got)
 		}
 		engine.Stop()
-		if got := test.WaitGoroutines(heartbeatReaderFunc, before, time.Second); got != before {
-			t.Fatalf("cycle %d: %d heartbeat readers running after Stop, expected %d", i, got, before)
+		if got := test.WaitGoroutines(heartbeatReaderFunc, 0, heartbeatReaderTimeout); got != 0 {
+			t.Fatalf("cycle %d: %d heartbeat readers running after Stop, expected 0", i, got)
 		}
 	}
 }

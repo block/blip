@@ -85,6 +85,10 @@ None.
 |table|&check;|One series per table, grouped by `db` and `tbl`|
 |schema||One series per schema, grouped by `db`|
 
+{{< hint type=warning >}}
+With `group-by: schema` and `truncate-table: no`, dropping a table can lower the cumulative schema total. The delta sink can then report the remaining total as a large spike. This can happen during online schema changes that drop the old table. Use the default `truncate-table: yes` for schema rollups unless this behavior is acceptable.
+{{< /hint >}}
+
 Schema rollups sum counts and total wait times across tables. Minimum and maximum times span the tables with events; averages are weighted by the event count. These are table handler waits, not physical disk I/O or complete query latency.
 
 ### `all`
@@ -121,7 +125,6 @@ A comma-separated list of database or table names to include (overrides option `
 
 If the table is truncated (default), the metrics are delta counters.
 Else, the values are cumulative counters.
-For schema series, use the default truncation mode when possible. With `truncate-table: no`, dropping a table can lower the schema's cumulative total and cause a spike in the reported delta.
 
 ### `truncate-timeout`
 

@@ -103,12 +103,10 @@ sinks:
     # No options
   noop:
     # No options
-  retry:
-    buffer-size: 60
-    send-timeout: 5s
-    send-retry-wait: 200ms
   signalfx:
     # See Sinks > signalfx
+  # Built-in sinks except log and noop also accept
+  # retry options. See Sinks > retry
 
 tags:
   env: ${ENVIRONMENT:-dev}

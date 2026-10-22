@@ -138,31 +138,42 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 		retryArgs.SendRetryWait = d
 	}
 
+	// Retry options are consumed here, so remove them before passing
+	// options to the specific sink, which rejects unknown options
+	sinkOpts := make(map[string]string, len(args.Options))
+	for k, v := range args.Options {
+		switch k {
+		case "buffer-size", "send-timeout", "send-retry-wait":
+			continue
+		}
+		sinkOpts[k] = v
+	}
+
 	// Make specific built-in sink
 	var err error
 	switch args.SinkName {
 	case "chronosphere":
-		retryArgs.Sink, err = NewChronosphere(args.MonitorId, args.Options, args.Tags)
+		retryArgs.Sink, err = NewChronosphere(args.MonitorId, sinkOpts, args.Tags)
 	case "signalfx":
-		httpClient, err := f.HTTPClient.MakeForSink("signalfx", args.MonitorId, args.Options, args.Tags)
+		httpClient, err := f.HTTPClient.MakeForSink("signalfx", args.MonitorId, sinkOpts, args.Tags)
 		if err != nil {
 			return nil, err
 		}
-		retryArgs.Sink, err = NewSignalFx(args.MonitorId, args.Options, args.Tags, httpClient)
+		retryArgs.Sink, err = NewSignalFx(args.MonitorId, sinkOpts, args.Tags, httpClient)
 		if err != nil {
 			return nil, err
 		}
 	case "datadog":
-		httpClient, err := f.HTTPClient.MakeForSink("datadog", args.MonitorId, args.Options, args.Tags)
+		httpClient, err := f.HTTPClient.MakeForSink("datadog", args.MonitorId, sinkOpts, args.Tags)
 		if err != nil {
 			return nil, err
 		}
-		retryArgs.Sink, err = NewDatadog(args.MonitorId, args.Options, args.Tags, httpClient)
+		retryArgs.Sink, err = NewDatadog(args.MonitorId, sinkOpts, args.Tags, httpClient)
 		if err != nil {
 			return nil, err
 		}
 	case "prom-pushgateway":
-		retryArgs.Sink, err = NewPromPushgateway(args.MonitorId, args.Options, args.Tags)
+		retryArgs.Sink, err = NewPromPushgateway(args.MonitorId, sinkOpts, args.Tags)
 	default:
 		return nil, fmt.Errorf("sink %s not registered", args.SinkName)
 	}

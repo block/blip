@@ -57,6 +57,7 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 * Fixed the `wait.io.table` collector after a failed read. With `truncate-table=no`, or on a read error not caused by the CMR, it returned partial metrics and no error; it now returns the error and no metrics. With `truncate-table=yes` (the default), it doesn't truncate the table after a failed read, and the truncate error policy's metric setting (`drop` or `zero`) now applies to the next sample, which covers more than one interval. Previously, a failed query or row scan was followed by one sample reported as a one-interval delta, about twice too high. A failed read is also no longer subject to the truncate error policy's `ignore` and `stop` settings: previously, a CMR timeout mid-read also failed the truncate, so `ignore` hid the error and `stop` stopped the collector.
 * Fixed the `repl.lag` collector's heartbeat reader, which kept running after its monitor stopped when `repl.lag` was collected at more than one level. It now stops when its monitor stops.
 * Changed the engine to call a collector's `Prepare` cleanup func when `Prepare` returns an error with a non-nil cleanup func, and to call the cleanup funcs of the collectors already prepared when a later collector in the plan fails. Previously they were not called, so resources started in `Prepare` leaked.
+* Fixed built-in sinks rejecting the retry options `buffer-size`, `send-timeout`, and `send-retry-wait`.
 
 ### v2.1.0 (10 Aug 2026)
 

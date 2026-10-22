@@ -8,12 +8,47 @@ The built-in sinks, except [`log`]({{< ref "log" >}}), use a retry sink to handl
 The retry sink uses a LIFO queue (a stack) to prioritize sending the latest metrics.
 During a long outage of the real sink, the retry sink drops the oldest metrics and keeps the latest metrics, up to its buffer size, which is configurable.
 
+Retry is not configured as a separate sink.
+Set its options in the options of each built-in sink that uses it, alongside that sink's own options.
+
 ## Quick Reference
 
 ```yaml
 sinks:
-  retry:
+  datadog:
+    # datadog options
     buffer-size: 60
     send-timeout: 5s
     send-retry-wait: 200ms
 ```
+
+## Options
+
+### `buffer-size`
+
+| | |
+|-|-|
+|**Valid values**|Integer greater than zero|
+|**Default value**|60|
+
+Maximum number of metrics batches buffered while the real sink is failing.
+When the buffer is full, the oldest batch is dropped.
+
+### `send-timeout`
+
+| | |
+|-|-|
+|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration)|
+|**Default value**|5s|
+
+Maximum time for each send cycle, in which buffered metrics batches are sent to the real sink, newest first.
+Batches not sent in time stay in the buffer for the next cycle.
+
+### `send-retry-wait`
+
+| | |
+|-|-|
+|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration)|
+|**Default value**|200ms|
+
+Wait time between sends to the real sink within one send cycle.

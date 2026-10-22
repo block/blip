@@ -475,6 +475,9 @@ func (c ConfigMonitor) Validate() error {
 		if len(c.DatabaseConfig) > 0 {
 			return fmt.Errorf("config.monitor.database-config requires an external database type")
 		}
+		if err := validTimeoutConnect(c.TimeoutConnect, "monitor.timeout-connect"); err != nil {
+			return fmt.Errorf("monitor %s: %w", c.MonitorId, err)
+		}
 		return nil
 	}
 	if databaseType == DatabaseTypeAny {
@@ -914,6 +917,24 @@ func DefaultConfigMySQL() ConfigMySQL {
 }
 
 func (c ConfigMySQL) Validate() error {
+	return validTimeoutConnect(c.TimeoutConnect, "mysql.timeout-connect")
+}
+
+// validTimeoutConnect validates timeout-connect for the given config section
+// and returns nil if valid, else returns an error. Empty is valid because
+// defaults might not be applied yet; the MySQL connection factory uses
+// DEFAULT_MONITOR_TIMEOUT_CONNECT. Zero is valid and disables the timeout.
+func validTimeoutConnect(timeout, config string) error {
+	if timeout == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(timeout)
+	if err != nil {
+		return fmt.Errorf("invalid config.%s %q: %w", config, timeout, err)
+	}
+	if d < 0 {
+		return fmt.Errorf("invalid config.%s %q: must be zero or greater", config, timeout)
+	}
 	return nil
 }
 

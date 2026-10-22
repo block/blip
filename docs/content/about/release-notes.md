@@ -38,6 +38,7 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 
 ### Unreleased
 
+* Applied `timeout-connect` (default `10s`) to MySQL connections. Previously it was ignored, so connecting to an unreachable host waited for the operating system TCP connect timeout. Set it to `0` to retain the old behavior. An invalid `timeout-connect` value, which used to be ignored, now fails config validation.
 * Added per-monitor fault counters, such as collector panics and timeouts, engine max runtime (EMR) timeouts, and dropped metrics, reported by the new [`GET /status/monitors/counters`]({{< ref "/api/status#get-statusmonitorscounters" >}}) API endpoint. Integrations can read them with the new `status.ReportCounters`, and register their own with `status.Counter`; the counter names are `status` constants like `status.COLLECTOR_PANICS`.
 * Added the optional `sink.CounterSink` interface for sinks that report monitor status counters; the monitor calls `RegisterCounters` each time it starts. A custom sink that wraps `sink.Retry` must forward `RegisterCounters` to it, else the retry buffer's `sink-retry-dropped` counter isn't reported.
 * Fixed the `engine-emr-timeout` event, which was defined but never sent. It's now sent once for each collection, or exporter scrape, that reaches the engine max runtime, so event receivers get one per EMR timeout.

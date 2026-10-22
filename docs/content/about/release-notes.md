@@ -65,6 +65,7 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 * **Behavior change:** The `repl.lag` heartbeat reader now uses `repl-check`; previously it ignored it at every level. With the Blip heartbeat writer and `repl-check` set, an instance that isn't a replica now drops `repl.lag.current`, or reports -1 with `report-not-a-replica=yes`, instead of reporting heartbeat lag.
 * **Behavior change:** Plans that set the `repl.lag` `writer` to `pfs` at one level and `blip` at another now fail to prepare, and the monitor keeps retrying the plan. Previously each level used its own writer. Set the same `writer` at every level, or set it at one level only.
 * Changed `heartbeat.BlipReader.Stop` to wait for the reader to return, which takes up to the heartbeat read timeout (2s) if a heartbeat query is running. Previously the reader could report status after its monitor was stopped and removed, so the removed monitor reappeared in [`GET /status/monitors`]({{< ref "/api/status#get-statusmonitors" >}}).
+* **Behavior change:** Fixed `monitor-loader.stop-loss` to count the net drop in the number of monitors. Previously it compared the number of removed monitors with the number loaded, so a small removal could trigger stop-loss and removing every monitor could not. A percent stop-loss (for example, `50%`) never triggered; it now triggers when the drop is greater than that percent of the monitors loaded before the reload.
 
 ### v2.1.0 (10 Aug 2026)
 

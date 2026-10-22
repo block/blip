@@ -154,10 +154,10 @@ func TestLoaderUnloadedMonitorsHaveNoCounters(t *testing.T) {
 		t.Errorf("counters reported for loaded but not started monitors: %v", got)
 	}
 
-	// Remove 2 of 4 monitors (stop-loss 1) and add a new one: Load makes the
-	// new monitor, then returns ErrStopLoss without adding it.
+	// Remove 3 of 4 monitors and add a new one, a net loss of 2 (stop-loss 1):
+	// Load makes the new monitor, then returns ErrStopLoss without adding it.
 	mux.Lock()
-	configs = []blip.ConfigMonitor{configs[0], configs[1], chronosphereMonitor(newId, "1")}
+	configs = []blip.ConfigMonitor{configs[0], chronosphereMonitor(newId, "1")}
 	mux.Unlock()
 	if err := ml.Load(context.Background()); err != ErrStopLoss {
 		t.Fatalf("Load returned %v, expected ErrStopLoss", err)

@@ -311,20 +311,30 @@ func (ml *Loader) loadAndUnload(ctx context.Context) ([]*stoppingMonitor, error)
 	// Check config.monitor-loader.stop-loss: don't change monitors if there's
 	// a big drop in the number because it might be a false-positive that will
 	// set off alarms when a bunch of metrics fail to report.
-	nBefore := float64(len(ml.repo))
-	nNow := float64(len(diff.removed))
+	//
+	// The loss is the net drop in the number of monitors: before is the number
+	// loaded now, and now is the number that would be loaded after this change.
+	// New monitors offset removed ones; changed monitors are in both diff.added
+	// and diff.changed, so they don't change the number. Stop-loss is a number
+	// or a percent, not both (see blip.StopLoss), and the loss must be greater
+	// than the limit to trigger it.
+	nBefore := len(ml.repo)
+	nNow := nBefore - len(diff.removed) + len(diff.added) - len(diff.changed)
 	if nNow < nBefore {
+		lost := nBefore - nNow
 		var errMsg string
-		if ml.stopLossPercent > 0 {
-			lost := (nBefore - nNow) / nBefore
-			if lost > ml.stopLossPercent {
-				errMsg = fmt.Sprintf("before: %d; now: %d; lost %f%% > limit %f%%", int(nBefore), int(nNow), lost, ml.stopLossPercent)
+		switch {
+		case ml.stopLossNumber > 0:
+			if uint(lost) > ml.stopLossNumber {
+				errMsg = fmt.Sprintf("before: %d; now: %d; lost %d > limit %d", nBefore, nNow, lost, ml.stopLossNumber)
 			}
-		}
-		if ml.stopLossNumber > 0 {
-			lost := uint(nBefore - nNow)
-			if lost > ml.stopLossNumber {
-				errMsg = fmt.Sprintf("before: %d; now: %d; lost %d > limit %d", int(nBefore), int(nNow), lost, ml.stopLossNumber)
+		case ml.stopLossPercent > 0:
+			// stopLossPercent is a whole number (50 for 50%). Compare
+			// lost*100 > limit*before, not lost/before*100 > limit, so a
+			// loss exactly at the limit (3 of 10 for 30%) doesn't round
+			// over it.
+			if float64(lost*100) > ml.stopLossPercent*float64(nBefore) {
+				errMsg = fmt.Sprintf("before: %d; now: %d; lost %.1f%% > limit %.0f%%", nBefore, nNow, float64(lost*100)/float64(nBefore), ml.stopLossPercent)
 			}
 		}
 		if errMsg != "" {

@@ -41,6 +41,7 @@ Blip v2.x is Stable. Existing production-ready components retain their readiness
 |[size.table]({{< ref "metrics/domains/size.table/" >}})|<span class="ga">Production</span>|
 |[status.global]({{< ref "metrics/domains/status.global/" >}})|<span class="ga">Production</span>|
 |[stmt.current]({{< ref "metrics/domains/stmt.current/" >}})|<span class="ga">Production</span>|
+|[stmt.schema]({{< ref "metrics/domains/stmt.schema/" >}})|New|
 |[tls]({{< ref "metrics/domains/tls/" >}})|New|
 |[var.global]({{< ref "metrics/domains/var.global/" >}})|<span class="ga">Production</span>|
 |[wait.io.table]({{< ref "metrics/domains/wait.io.table/" >}})|Stable|

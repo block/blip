@@ -89,7 +89,7 @@ func TestCollectSchemaRollupMySQL80(t *testing.T) {
 				Metrics: []string{"count_star", "min_timer_wait", "avg_timer_wait", "max_timer_wait"},
 				Options: map[string]string{
 					waitiotable.OPT_INCLUDE:        "mysql.*",
-					waitiotable.OPT_GROUP_BY:       "both",
+					waitiotable.OPT_GROUP_BY:       "schema",
 					waitiotable.OPT_TRUNCATE_TABLE: "no",
 				},
 			},
@@ -103,19 +103,30 @@ func TestCollectSchemaRollupMySQL80(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var table, schema bool
+	var schema bool
 	for _, value := range values {
 		if value.Group["db"] != "mysql" {
 			t.Fatalf("unexpected group: %+v", value.Group)
 		}
 		if _, ok := value.Group["tbl"]; ok {
-			table = true
-		} else {
-			schema = true
+			t.Fatalf("schema metric has table group: %+v", value.Group)
 		}
+		schema = true
 	}
-	if !table || !schema {
-		t.Fatalf("expected both table and schema metrics, got %d values", len(values))
+	if !schema {
+		t.Fatal("expected schema metrics")
+	}
+}
+
+func TestPrepareRejectsBoth(t *testing.T) {
+	c := waitiotable.NewTable(nil)
+	plan := blip.Plan{Levels: map[string]blip.Level{
+		"test": {Name: "test", Collect: map[string]blip.Domain{
+			waitiotable.DOMAIN: {Options: map[string]string{waitiotable.OPT_GROUP_BY: "both"}},
+		}},
+	}}
+	if _, err := c.Prepare(context.Background(), plan); err == nil {
+		t.Fatal("expected group-by: both to be rejected")
 	}
 }
 

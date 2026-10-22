@@ -84,7 +84,6 @@ None.
 |-----|-------|-----------|
 |table|&check;|One series per table, grouped by `db` and `tbl`|
 |schema||One series per schema, grouped by `db`|
-|both||Table and schema series|
 
 Schema rollups sum counts and total wait times across tables. Minimum and maximum times span the tables with events; averages are weighted by the event count. These are table handler waits, not physical disk I/O or complete query latency.
 
@@ -122,6 +121,7 @@ A comma-separated list of database or table names to include (overrides option `
 
 If the table is truncated (default), the metrics are delta counters.
 Else, the values are cumulative counters.
+For schema series, use the default truncation mode when possible. With `truncate-table: no`, dropping a table can lower the schema's cumulative total and cause a spike in the reported delta.
 
 ### `truncate-timeout`
 

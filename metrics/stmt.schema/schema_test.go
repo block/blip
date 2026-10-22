@@ -4,6 +4,8 @@ package stmtschema
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 
@@ -38,7 +40,11 @@ func TestSummaryQuery(t *testing.T) {
 func TestCollectMySQL80(t *testing.T) {
 	_, db, err := test.Connection("mysql80")
 	if err != nil {
-		t.Skip("mysql80 not running")
+		var netErr *net.OpError
+		if errors.As(err, &netErr) {
+			t.Skipf("mysql80 not running: %v", err)
+		}
+		t.Fatalf("connect to mysql80: %v", err)
 	}
 	defer db.Close()
 

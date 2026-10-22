@@ -83,9 +83,7 @@ func init() {
 type tableOptions struct {
 	query             string
 	params            []interface{}
-	schemaQuery       string
-	schemaParams      []interface{}
-	groupBy           string
+	schema            bool
 	truncate          bool
 	truncateTimeout   time.Duration
 	stop              bool
@@ -157,18 +155,17 @@ func (t *Table) Help() blip.CollectorHelp {
 			},
 			OPT_GROUP_BY: {
 				Name:    OPT_GROUP_BY,
-				Desc:    "Group table I/O by table, owning schema, or both",
+				Desc:    "Group table I/O by table or owning schema",
 				Default: "table",
 				Values: map[string]string{
 					"table":  "One series per table",
 					"schema": "One series per schema",
-					"both":   "Table and schema series",
 				},
 			},
 		},
 		Groups: []blip.CollectorKeyValue{
-			{Key: "db", Value: "the database name for the corresponding table io, or empty string for all dbs"},
-			{Key: "tbl", Value: "the table name for the corresponding table io, or empty string for all tables"},
+			{Key: "db", Value: "database name for table or schema series"},
+			{Key: "tbl", Value: "table name; present only for table series"},
 		},
 		Errors: map[string]blip.CollectorHelpError{
 			ERR_TRUNCATE_FAILED: {
@@ -197,10 +194,17 @@ LEVEL:
 			dom.Options[OPT_EXCLUDE] = OPT_EXCLUDE_DEFAULT
 		}
 
-		o.query, o.params = TableIoWaitQuery(dom.Options, dom.Metrics)
-		o.groupBy = dom.Options[OPT_GROUP_BY]
-		if o.groupBy == "schema" || o.groupBy == "both" {
-			o.schemaQuery, o.schemaParams = TableIoWaitSchemaQuery(dom.Options, dom.Metrics)
+		switch dom.Options[OPT_GROUP_BY] {
+		case "", "table":
+		case "schema":
+			o.schema = true
+		default:
+			return nil, fmt.Errorf("invalid %s value: %q", OPT_GROUP_BY, dom.Options[OPT_GROUP_BY])
+		}
+		if o.schema {
+			o.query, o.params = TableIoWaitSchemaQuery(dom.Options, dom.Metrics)
+		} else {
+			o.query, o.params = TableIoWaitQuery(dom.Options, dom.Metrics)
 		}
 
 		if truncate, ok := dom.Options[OPT_TRUNCATE_TABLE]; ok && truncate == "no" {
@@ -252,26 +256,17 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 		return nil, nil
 	}
 
-	var metrics []blip.MetricValue
-	if o.groupBy != "schema" {
-		values, err := t.collectQuery(ctx, o.query, o.params, o.metricType, false)
-		if err != nil {
-			return nil, err
-		}
-		metrics = append(metrics, values...)
-	}
-	if o.schemaQuery != "" {
-		values, err := t.collectQuery(ctx, o.schemaQuery, o.schemaParams, o.metricType, true)
-		if err != nil {
-			return nil, err
-		}
-		metrics = append(metrics, values...)
+	metrics, err := t.collectQuery(ctx, o.query, o.params, o.metricType, o.schema)
+	if err != nil {
+		return nil, err
 	}
 
 	if o.truncate {
 		conn, err := t.db.Conn(ctx)
 		if err == nil {
 			defer conn.Close()
+			// Set lock_wait_timeout so metadata locking cannot stall this collector.
+			// If this fails, treat it like a truncate failure rather than risk a long wait.
 			_, err = conn.ExecContext(ctx, o.lockWaitQuery)
 			if err == nil {
 				trCtx, cancelFn := context.WithTimeout(ctx, o.truncateTimeout)
@@ -279,6 +274,7 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 				_, err = conn.ExecContext(trCtx, TRUNCATE_QUERY)
 			}
 		}
+		// The policy also processes metric values when truncation succeeds.
 		return o.truncateErrPolicy.TruncateError(err, &o.stop, metrics)
 	}
 

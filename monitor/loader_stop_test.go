@@ -21,6 +21,7 @@ import (
 	"github.com/cashapp/blip/v2/metrics"
 	"github.com/cashapp/blip/v2/monitor"
 	"github.com/cashapp/blip/v2/plan"
+	"github.com/cashapp/blip/v2/sink"
 	"github.com/cashapp/blip/v2/status"
 	"github.com/cashapp/blip/v2/test/mock"
 )
@@ -64,6 +65,7 @@ type stopTest struct {
 	prepared map[string]int // monitor ID => number of successful Prepare calls
 	cleanup  func(monitorId string)
 	events   []event.Event
+	sinks    map[string]map[string]string // monitor sinks; default noop
 }
 
 func (st *stopTest) preparedCount(monitorId string) int {
@@ -154,12 +156,16 @@ func setupStopTest(t *testing.T, stopTimeout string, ids *[]string, startMonitor
 			LoadMonitors: func(blip.Config) ([]blip.ConfigMonitor, error) {
 				st.mux.Lock()
 				defer st.mux.Unlock()
+				sinks := st.sinks
+				if sinks == nil {
+					sinks = map[string]map[string]string{"noop": {}}
+				}
 				mons := make([]blip.ConfigMonitor, len(*ids))
 				for i, id := range *ids {
 					mons[i] = blip.ConfigMonitor{
 						MonitorId: id,
 						Hostname:  "127.0.0.1:1",
-						Sinks:     map[string]map[string]string{"noop": {}},
+						Sinks:     sinks,
 					}
 				}
 				return mons, nil
@@ -193,6 +199,26 @@ func waitPrepared(t *testing.T, st *stopTest, n int, ids ...string) {
 			5*time.Second, 5*time.Millisecond, "monitor %s not prepared %d times", id, n)
 	}
 }
+
+// stopTestRetrySink is a Retry-wrapped sink that always fails to send. Its
+// retry buffer holds 1 batch, so every send after the first drops a batch.
+const stopTestRetrySink = "loader-stop-test-retry"
+
+type stopTestRetrySinkFactory struct{}
+
+func (stopTestRetrySinkFactory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
+	return sink.NewRetry(sink.RetryArgs{
+		MonitorId: args.MonitorId,
+		Sink: mock.Sink{SendFunc: func(context.Context, *blip.Metrics) error {
+			return errors.New("send failed")
+		}},
+		BufferSize:    1,
+		SendTimeout:   time.Millisecond,
+		SendRetryWait: time.Millisecond,
+	}), nil
+}
+
+var registerStopTestRetrySink sync.Once
 
 func stopStatus(monitorId string) string {
 	return status.ReportMonitors(monitorId)[monitorId]["error:stop"]
@@ -431,4 +457,56 @@ func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	require.NoError(t, loader.Load(context.Background()))
 	assert.Empty(t, loader.Monitors())
 	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, ""))
+}
+
+func TestLoaderPendingStartRegistersSinkCounters(t *testing.T) {
+	// A changed monitor is made (with new sinks) before the old monitor with
+	// the same ID is unloaded. If the old monitor is still stopping, the new
+	// monitor starts when it stops, right after the old monitor's status and
+	// counters are removed. The new monitor's sink counter must be reported
+	// and incremented after it starts.
+	registerStopTestRetrySink.Do(func() {
+		require.NoError(t, sink.Register(stopTestRetrySink, stopTestRetrySinkFactory{}))
+	})
+	const id = "sinkcounters1"
+	counter := status.SINK_RETRY_DROPPED + ":" + mock.Sink{}.Name()
+	ids := []string{id}
+	st, loader := setupStopTest(t, "200ms", &ids, nil)
+	defer status.RemoveMonitor(id)
+	st.sinks = map[string]map[string]string{stopTestRetrySink: {"version": "1"}}
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(string) { <-release } // block stop until released
+
+	dropped := func() (uint64, bool) {
+		v, ok := status.ReportCounters(id)[id][counter]
+		return v, ok
+	}
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, id)
+	require.Eventually(t, func() bool { v, _ := dropped(); return v > 0 },
+		5*time.Second, 5*time.Millisecond, "%s not incremented by first monitor", counter)
+
+	// Change the sink config. Load makes the new monitor, then unloads the old
+	// one, which is stuck stopping, so the new monitor's start is pending.
+	st.mux.Lock()
+	st.sinks = map[string]map[string]string{stopTestRetrySink: {"version": "2"}}
+	st.mux.Unlock()
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	assert.Contains(t, status.ReportMonitors(id)[id][status.MONITOR], "start pending")
+	assert.Equal(t, 1, st.preparedCount(id), "new monitor started while old monitor was still stopping")
+
+	// The old monitor stops, its status is removed, and the new monitor starts
+	releaseOnce.Do(func() { close(release) })
+	waitPrepared(t, st, 2, id)
+	require.Eventually(t, func() bool { v, ok := dropped(); return ok && v > 0 },
+		5*time.Second, 5*time.Millisecond, "%s not reported and incremented after new monitor started: %v", counter, status.ReportCounters(id))
+
+	setIds(st, &ids)
+	require.NoError(t, loader.Load(context.Background()))
 }

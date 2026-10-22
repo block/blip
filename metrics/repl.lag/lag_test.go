@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/heartbeat"
 	"github.com/cashapp/blip/v2/test"
 	"github.com/cashapp/blip/v2/test/mock"
 )
@@ -222,4 +223,154 @@ func TestCollectPFSReturnsDeadlineExceeded(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Collect returned error %v, expected an error wrapping context.DeadlineExceeded", err)
 	}
+}
+
+// fakeReader is a heartbeat reader that reports lag without a database.
+type fakeReader struct {
+	lag heartbeat.Lag
+}
+
+func (r fakeReader) Start() error                               { return nil }
+func (r fakeReader) Stop()                                      {}
+func (r fakeReader) Lag(context.Context) (heartbeat.Lag, error) { return r.lag, nil }
+
+func TestPrepareBlipAtMultipleLevelsDropsNoHeartbeat(t *testing.T) {
+	// report-no-heartbeat defaults to no (drop), and that applies to every
+	// level, not only to the level that started the reader. The reader can't
+	// reach the database, so it reports no heartbeat.
+	for _, report := range []string{"", "no", "yes"} {
+		t.Run("report-no-heartbeat="+report, func(t *testing.T) {
+			c := NewLag(unreachableDB(t))
+			plan := blipPlan("fast", "medium", "slow")
+			for _, level := range plan.Levels {
+				if report != "" {
+					level.Collect[DOMAIN].Options[OPT_REPORT_NO_HEARTBEAT] = report
+				}
+			}
+			cleanup, err := c.Prepare(context.Background(), plan)
+			stopReader(t, cleanup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for level := range plan.Levels {
+				metrics, err := c.Collect(context.Background(), level)
+				if err != nil {
+					t.Fatalf("%s: %s", level, err)
+				}
+				if report == "yes" {
+					if len(metrics) != 1 || metrics[0].Value != -1 {
+						t.Errorf("%s: got %+v, expected repl.lag.current = -1", level, metrics)
+					}
+				} else if len(metrics) != 0 {
+					t.Errorf("%s: got %+v, expected no metrics (dropped)", level, metrics)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareBlipPassesReplCheckToReader(t *testing.T) {
+	// The reader selects @@<repl-check> to report whether the instance is a
+	// replica, so it must be made with the repl-check option. The repl check
+	// is verified after the reader starts, and that fails because the database
+	// is unreachable, but by then the reader has been made.
+	c := NewLag(unreachableDB(t))
+	var args []heartbeat.BlipReaderArgs
+	c.newReader = func(a heartbeat.BlipReaderArgs) heartbeat.Reader {
+		args = append(args, a)
+		return fakeReader{}
+	}
+	plan := blipPlan("fast", "slow")
+	for _, level := range plan.Levels {
+		level.Collect[DOMAIN].Options[OPT_REPL_CHECK] = "read_only"
+	}
+	if _, err := c.Prepare(context.Background(), plan); err == nil {
+		t.Fatal("Prepare returned nil error, expected repl check error")
+	}
+	if len(args) != 1 {
+		t.Fatalf("Prepare made %d heartbeat readers, expected 1", len(args))
+	}
+	assert.Equal(t, "read_only", args[0].ReplCheck)
+}
+
+func TestPrepareRejectsDifferentWriters(t *testing.T) {
+	// The writer must be the same at every level. With an unreachable database,
+	// auto resolves to blip, but it's still a different writer configuration.
+	// No writer is the same as auto.
+	tests := []struct {
+		fast, slow string
+		ok         bool
+	}{
+		{fast: LAG_WRITER_BLIP, slow: "auto", ok: false},
+		{fast: "auto", slow: LAG_WRITER_BLIP, ok: false},
+		{fast: LAG_WRITER_BLIP, slow: LAG_WRITER_BLIP, ok: true},
+		{fast: "", slow: "auto", ok: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fast+"/"+tt.slow, func(t *testing.T) {
+			c := NewLag(unreachableDB(t))
+			c.newReader = func(heartbeat.BlipReaderArgs) heartbeat.Reader { return fakeReader{} }
+			plan := blipPlan("fast", "slow")
+			plan.Levels["fast"].Collect[DOMAIN].Options[OPT_WRITER] = tt.fast
+			plan.Levels["slow"].Collect[DOMAIN].Options[OPT_WRITER] = tt.slow
+			_, err := c.Prepare(context.Background(), plan)
+			if tt.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorContains(t, err, "different writer configuration")
+			}
+		})
+	}
+}
+
+func TestPrepareSetsOptionsAtEveryLevel(t *testing.T) {
+	// The writer is set up once, but every level has its own report and
+	// channel name options.
+	c := NewLag(unreachableDB(t))
+	c.newReader = func(heartbeat.BlipReaderArgs) heartbeat.Reader {
+		return fakeReader{lag: heartbeat.Lag{Replica: false, Milliseconds: -1}}
+	}
+	plan := blipPlan("fast", "medium", "slow")
+	plan.Levels["fast"].Collect[DOMAIN].Options[OPT_REPORT_NO_HEARTBEAT] = "yes"
+	plan.Levels["medium"].Collect[DOMAIN].Options[OPT_REPORT_NOT_A_REPLICA] = "yes"
+	plan.Levels["slow"].Collect[DOMAIN].Options[OPT_DEFAULT_CHANNEL_NAME] = "main"
+	if _, err := c.Prepare(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	assert.Equal(t, map[string]string{"fast": LAG_WRITER_BLIP, "medium": LAG_WRITER_BLIP, "slow": LAG_WRITER_BLIP}, c.lagWriterIn)
+	assert.Equal(t, map[string]bool{"fast": false, "medium": true, "slow": true}, c.dropNoHeartbeat)
+	assert.Equal(t, map[string]bool{"fast": true, "medium": false, "slow": true}, c.dropNotAReplica)
+	assert.Equal(t, map[string]string{"fast": "", "medium": "", "slow": "main"}, c.defaultChannelNameOverrides)
+
+	// Not a replica: reported only at the level with report-not-a-replica=yes
+	for level := range plan.Levels {
+		metrics, err := c.Collect(context.Background(), level)
+		if err != nil {
+			t.Fatalf("%s: %s", level, err)
+		}
+		if level == "medium" {
+			assert.Len(t, metrics, 1, level)
+		} else {
+			assert.Empty(t, metrics, level)
+		}
+	}
+}
+
+func TestPrepareRejectsPFSAndBlipWriters(t *testing.T) {
+	_, db, err := test.Connection("mysql80")
+	if err != nil {
+		if test.Build {
+			t.Skip("mysql80 not running")
+		} else {
+			t.Fatal(err)
+		}
+	}
+	defer db.Close()
+
+	c := NewLag(db)
+	plan := blipPlan("fast", "slow")
+	plan.Levels["fast"].Collect[DOMAIN].Options[OPT_WRITER] = LAG_WRITER_PFS
+	cleanup, err := c.Prepare(context.Background(), plan)
+	stopReader(t, cleanup)
+	assert.ErrorContains(t, err, "different writer configuration")
 }

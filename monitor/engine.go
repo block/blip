@@ -224,6 +224,9 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 			status.Monitor(e.monitorId, status.ENGINE_PREPARE, "%s: prepare collector %s", plan.Name, domain)
 			cleanup, err := c.Prepare(ctx, plan)
 			if err != nil {
+				// The collector should have released its resources and returned
+				// nil, but call a returned cleanup func as a backstop. See
+				// blip.Collector.Prepare.
 				if cleanup != nil {
 					cleanup()
 				}

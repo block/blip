@@ -204,6 +204,7 @@ func TestReader(t *testing.T) {
 		Waiter:    mockWaiter,
 	})
 	hr.Start()
+	defer hr.Stop() // before ReadErrorWait is reset: Stop waits for the reader to return
 
 	timeout := time.After(5 * time.Second) // this whole test should take <1s
 

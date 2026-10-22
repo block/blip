@@ -62,6 +62,7 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 * Changed the retry sink to stop waiting `send-retry-wait` between sends when `send-timeout` expires. Previously a send cycle could run past `send-timeout` by up to one `send-retry-wait`.
 * Added `sink.RetryArgs.Validate` and the `sink.MAX_RETRY_BUFFER_SIZE` and `sink.MAX_RETRY_SEND_TIMEOUT` constants. `sink.NewRetry` doesn't call `Validate`, so custom sinks that build `RetryArgs` from user input should call it first.
 * Fixed `repl.lag` at multiple levels with the Blip heartbeat writer: `report-no-heartbeat` and `report-not-a-replica` now apply at every level, not only at one random level, and the heartbeat reader now uses `repl-check`. Levels that don't set `writer`, or set it to `auto`, use the writer set at another level. Plans that set `writer` to `pfs` at one level and `blip` at another now fail to prepare.
+* Changed `heartbeat.BlipReader.Stop` to wait for the reader to return, which takes up to the heartbeat read timeout (2s) if a heartbeat query is running. Previously the reader could report status after its monitor was stopped and removed, so the removed monitor reappeared in [`GET /status/monitors`]({{< ref "/api/status#get-statusmonitors" >}}).
 
 ### v2.1.0 (10 Aug 2026)
 

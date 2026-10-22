@@ -54,7 +54,8 @@ type BlipReader struct {
 	lag      int64
 	last     time.Time
 	stopChan chan struct{}
-	doneChan chan struct{}
+	doneChan chan struct{} // closed when run returns
+	started  bool          // run started, so Stop waits for doneChan
 	isRepl   bool
 	event    event.MonitorReceiver
 	query    string
@@ -113,7 +114,20 @@ func NewBlipReader(args BlipReaderArgs) *BlipReader {
 	return r
 }
 
+// Start starts the reader in a goroutine. It doesn't start the reader if Start
+// was called before, or if Stop was called first.
 func (r *BlipReader) Start() error {
+	r.Lock()
+	defer r.Unlock()
+	select {
+	case <-r.stopChan:
+		return nil // stopped before started
+	default:
+	}
+	if r.started {
+		return nil
+	}
+	r.started = true
 	go r.run()
 	return nil
 }
@@ -211,15 +225,24 @@ func (r *BlipReader) wait(d time.Duration) bool {
 	}
 }
 
+// Stop stops the reader and waits for it to return, so it doesn't report
+// status after Stop returns. If a heartbeat query is running, Stop waits for it
+// to return, which takes up to ReadTimeout. Stop can be called more than once,
+// concurrently, and before Start.
 func (r *BlipReader) Stop() {
 	r.Lock()
 	select {
 	case <-r.stopChan:
-	case <-r.doneChan:
 	default:
 		close(r.stopChan)
 	}
+	started := r.started
 	r.Unlock()
+
+	// Wait without the lock: run locks to update lag
+	if started {
+		<-r.doneChan
+	}
 }
 
 func (r *BlipReader) Lag(_ context.Context) (Lag, error) {

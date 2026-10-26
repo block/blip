@@ -68,7 +68,7 @@ func TestMonitorStopEvent(t *testing.T) {
 	var mux sync.Mutex
 	var stopped []event.Event
 	event.Subscribe(mock.EventReceiver{RecvFunc: func(e event.Event) {
-		if e.Event == event.MONITOR_STOPPED {
+		if e.Event == event.MONITOR_STOPPED && e.MonitorId == monitorId {
 			mux.Lock()
 			stopped = append(stopped, e)
 			mux.Unlock()

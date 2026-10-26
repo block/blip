@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +73,18 @@ func (st *stopTest) preparedCount(monitorId string) int {
 	st.mux.Lock()
 	defer st.mux.Unlock()
 	return st.prepared[monitorId]
+}
+
+func (st *stopTest) lastEventMsg(name, monitorId string) string {
+	st.mux.Lock()
+	defer st.mux.Unlock()
+	msg := ""
+	for _, e := range st.events {
+		if e.Event == name && e.MonitorId == monitorId {
+			msg = e.Message
+		}
+	}
+	return msg
 }
 
 func (st *stopTest) eventCount(name, monitorId string) int {
@@ -509,4 +522,201 @@ func TestLoaderPendingStartRegistersSinkCounters(t *testing.T) {
 
 	setIds(st, &ids)
 	require.NoError(t, loader.Load(context.Background()))
+}
+
+// stopEvents returns the names of the stop events for a monitor, in order.
+func (st *stopTest) stopEvents(monitorId string) []string {
+	st.mux.Lock()
+	defer st.mux.Unlock()
+	names := []string{}
+	for _, e := range st.events {
+		if e.MonitorId != monitorId {
+			continue
+		}
+		if e.Event == event.MONITOR_STOPPED || e.Event == event.MONITOR_STOP_TIMEOUT {
+			names = append(names, e.Event)
+		}
+	}
+	return names
+}
+
+func TestLoaderStopUnlocked(t *testing.T) {
+	// Stop, Unload, and Start with lock=false are called by a caller that holds
+	// the Loader mutex. Stop and Unload wait for the monitor to stop while the
+	// caller holds the mutex, but no longer than the stop timeout.
+	ids := []string{"unlocked1", "unlocked2"}
+	st, loader := setupStopTest(t, "200ms", &ids, nil)
+	defer status.RemoveMonitor("unlocked1")
+	defer status.RemoveMonitor("unlocked2")
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	var stuck sync.Map
+	st.cleanup = func(monitorId string) {
+		if _, ok := stuck.Load(monitorId); ok {
+			<-release
+		}
+	}
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "unlocked1", "unlocked2")
+
+	// A normal stop returns nil once the monitor has stopped, and the stopped
+	// monitor can be started again
+	loader.Lock()
+	assert.NoError(t, loader.Stop("unlocked1", false))
+	assert.Contains(t, status.ReportMonitors("unlocked1")["unlocked1"][status.MONITOR], "stopped at")
+	assert.NoError(t, loader.Start("unlocked1", false))
+	loader.Unlock()
+	waitPrepared(t, st, 2, "unlocked1")
+
+	// A stuck stop returns ErrStopTimeout after the stop timeout
+	stuck.Store("unlocked1", true)
+	loader.Lock()
+	t0 := time.Now()
+	err := loader.Stop("unlocked1", false)
+	d := time.Since(t0)
+	loader.Unlock()
+	assert.ErrorIs(t, err, monitor.ErrStopTimeout)
+	assert.GreaterOrEqual(t, d, 200*time.Millisecond)
+	assert.Less(t, d, 2*time.Second)
+	assert.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOP_TIMEOUT, "unlocked1") == 1 },
+		time.Second, 5*time.Millisecond)
+
+	// Unload works the same: nil for a normal stop
+	loader.Lock()
+	assert.NoError(t, loader.Unload("unlocked2", false))
+	loader.Unlock()
+	assert.Equal(t, []string{"unlocked1"}, monitorIds(loader.Monitors()))
+
+	releaseOnce.Do(func() { close(release) })
+	loader.Lock()
+	assert.NoError(t, loader.Unload("unlocked1", false))
+	loader.Unlock()
+	assert.Empty(t, loader.Monitors())
+}
+
+func TestLoaderStopEvents(t *testing.T) {
+	// Every stop sends one MONITOR_STOPPED event, with the monitor ID. A stop
+	// that misses the stop timeout sends MONITOR_STOP_TIMEOUT, then again every
+	// 10 x the stop timeout, and MONITOR_STOPPED after all of them.
+	ids := []string{"events1", "events2"}
+	st, loader := setupStopTest(t, "50ms", &ids, nil)
+	defer status.RemoveMonitor("events1")
+	defer status.RemoveMonitor("events2")
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(monitorId string) {
+		if monitorId == "events2" {
+			<-release
+		}
+	}
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "events1", "events2")
+
+	require.NoError(t, loader.Stop("events1", true))
+	assert.Eventually(t, func() bool { return len(st.stopEvents("events1")) == 1 },
+		time.Second, 5*time.Millisecond)
+	assert.Equal(t, []string{event.MONITOR_STOPPED}, st.stopEvents("events1"))
+
+	// events2 is stuck: reported at 50ms and 550ms, then it stops at about 700ms
+	assert.ErrorIs(t, loader.Stop("events2", true), monitor.ErrStopTimeout)
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOP_TIMEOUT, "events2") == 2 },
+		2*time.Second, 5*time.Millisecond)
+	assert.Contains(t, stopStatus("events2"), "not stopped after 550ms")
+	time.Sleep(150 * time.Millisecond)
+	releaseOnce.Do(func() { close(release) })
+	require.Eventually(t, func() bool { return len(st.stopEvents("events2")) == 3 },
+		time.Second, 5*time.Millisecond)
+	assert.Equal(t, []string{event.MONITOR_STOP_TIMEOUT, event.MONITOR_STOP_TIMEOUT, event.MONITOR_STOPPED}, st.stopEvents("events2"))
+	assert.Empty(t, stopStatus("events2"))
+
+	// No MONITOR_STOPPED event without a monitor ID
+	assert.Equal(t, 2, st.eventCount(event.MONITOR_STOPPED, ""))
+}
+
+func TestLoaderStopEventOrder(t *testing.T) {
+	// A monitor that stops right when the stop timeout expires must not send
+	// MONITOR_STOPPED before MONITOR_STOP_TIMEOUT. Run many monitors whose
+	// stops take about as long as the stop timeout.
+	const n = 20
+	ids := makeIds("order", n)
+	st, loader := setupStopTest(t, "20ms", &ids, nil)
+	defer func() {
+		for _, id := range makeIds("order", n) {
+			status.RemoveMonitor(id)
+		}
+	}()
+	st.cleanup = func(string) { time.Sleep(20 * time.Millisecond) }
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, ids...)
+
+	setIds(st, &ids)
+	require.NoError(t, loader.Load(context.Background()))
+	for _, id := range makeIds("order", n) {
+		require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, id) == 1 },
+			2*time.Second, 5*time.Millisecond, "%s not stopped", id)
+		got := st.stopEvents(id)
+		assert.Equal(t, event.MONITOR_STOPPED, got[len(got)-1], "%s: stop events %v", id, got)
+	}
+}
+
+func TestLoaderTryStart(t *testing.T) {
+	// TryStart returns why a monitor did or didn't start
+	ids := []string{"try1", "try-declined"}
+	st, loader := setupStopTest(t, "100ms", &ids, func(cfg blip.ConfigMonitor) bool {
+		return cfg.MonitorId != "try-declined"
+	})
+	defer status.RemoveMonitor("try1")
+	defer status.RemoveMonitor("try-declined")
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(string) { <-release }
+
+	require.NoError(t, loader.Load(context.Background()))
+
+	res, err := loader.TryStart("try1")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_OK, res)
+	waitPrepared(t, st, 1, "try1")
+
+	res, err = loader.TryStart("try1")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_RUNNING, res)
+
+	res, err = loader.TryStart("try-declined")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_DECLINED, res)
+
+	_, err = loader.TryStart("not-loaded")
+	assert.ErrorIs(t, err, monitor.ErrMonitorNotLoaded)
+
+	// Stuck stop: start is pending, then reported as running (pending)
+	assert.ErrorIs(t, loader.Stop("try1", true), monitor.ErrStopTimeout)
+	res, err = loader.TryStart("try1")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_PENDING, res)
+	res, err = loader.TryStart("try1")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_RUNNING, res)
+	require.Eventually(t, func() bool {
+		return strings.Contains(st.lastEventMsg(event.MONITOR_STOP_TIMEOUT, "try1"), "waiting for it to stop")
+	}, 3*time.Second, 5*time.Millisecond, "stop timeout report doesn't mention the pending start")
+
+	st.mux.Lock()
+	st.cleanup = func(string) {}
+	st.mux.Unlock()
+	releaseOnce.Do(func() { close(release) })
+	waitPrepared(t, st, 2, "try1")
+	assert.NoError(t, loader.Unload("try1", true))
 }

@@ -175,12 +175,22 @@ func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("start %s", monitorId)
 	// Start through the loader, not Monitor.Start, so the loader knows the
 	// monitor is running and doesn't start it while it's still stopping
-	if err := api.monitorLoader.Start(monitorId, true); err != nil {
+	res, err := api.monitorLoader.TryStart(monitorId)
+	if err != nil {
 		errMsg := html.EscapeString(fmt.Sprintf("Error starting monitor %s: %s", html.EscapeString(monitorId), err))
 		http.Error(w, errMsg, http.StatusConflict)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	switch res {
+	case monitor.START_PENDING:
+		http.Error(w, fmt.Sprintf("monitor %s is still stopping; it starts when it has stopped", html.EscapeString(monitorId)), http.StatusAccepted)
+	case monitor.START_RUNNING:
+		http.Error(w, fmt.Sprintf("Error starting monitor %s: already running", html.EscapeString(monitorId)), http.StatusConflict)
+	case monitor.START_DECLINED:
+		http.Error(w, fmt.Sprintf("Error starting monitor %s: declined by the StartMonitor plugin", html.EscapeString(monitorId)), http.StatusConflict)
+	default:
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (api *API) monitorsStop(w http.ResponseWriter, r *http.Request) {

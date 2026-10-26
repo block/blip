@@ -191,9 +191,16 @@ The `stop-loss` variable enables the [stop-lost feature]({{< ref "/monitors/load
 The `stop-timeout` variable sets how long Blip waits for a monitor to stop when it's unloaded or stopped by the API.
 Blip stops monitors in the background and in parallel, so this doesn't limit how long a monitor can take to stop; it limits how long a reload or stop request waits for it.
 A monitor that hasn't stopped by then keeps stopping in the background, and Blip reports it with event `monitor-stop-timeout` and monitor status `error:stop`.
+Blip reports it again every 10 times the stop timeout until it stops.
 If the monitor is reloaded with the same ID, the new monitor doesn't start until the old one has stopped.
 
-A monitor normally stops within about 1 second (one collection tick plus a collection in progress).
+A stop waits for each monitor subsystem to stop:
+
+* The level collector checks for stop once per collection tick (1 second), and it finishes a collection in progress first. A collection can run for up to the engine max runtime: the plan's shortest level interval minus 10% (at most 1 second less).
+* The plan changer checks for stop once per second, or after its retry wait while MySQL is offline.
+* The heartbeat writer checks for stop after each heartbeat (`heartbeat.freq`), or after its retry wait (10 or 20 seconds) while it can't write.
+
+A healthy monitor usually stops in about 1 second, but a slow collection or a heartbeat on a read-only server can take longer than the default stop timeout.
 
 ---
 

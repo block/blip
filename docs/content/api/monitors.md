@@ -47,7 +47,7 @@ Error message on 4xx or 5xx status code.
 Starts one monitor.
 `id` query key is required.
 
-If the monitor is still stopping, it starts when it has stopped.
+If the monitor is still stopping, the request returns 202, and the monitor starts when it has stopped.
 
 ### Query
 
@@ -63,7 +63,9 @@ Error message on 4xx or 5xx status code.
 
 ### Status Codes
 
-<strong>409</strong>: Error starting monitor
+<strong>202</strong>: Monitor is still stopping; it starts when it has stopped
+
+<strong>409</strong>: Error starting monitor, monitor already running or waiting to start, or the `StartMonitor` plugin declined to start it
 
 ## POST /monitors/stop?id=ID
 

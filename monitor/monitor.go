@@ -139,6 +139,16 @@ func (m *Monitor) DSN() string {
 // Stop directly, else the running state of the monitor and the Loader
 // will be out of sync.
 func (m *Monitor) Stop() error {
+	if m.halt() {
+		event.Sendf(event.MONITOR_STOPPED, "%s", m.monitorId)
+	}
+	return nil
+}
+
+// halt stops the monitor like Stop but doesn't send event MONITOR_STOPPED, so
+// the Loader can send it after other stop events. It returns true if it stopped
+// the monitor, or false if the monitor wasn't running.
+func (m *Monitor) halt() bool {
 	m.lifeMux.Lock()
 	defer m.lifeMux.Unlock()
 
@@ -149,7 +159,7 @@ func (m *Monitor) Stop() error {
 	if m.runLoopChan == nil {
 		m.runMux.Unlock()
 		blip.Debug("%s: not started", m.monitorId)
-		return nil
+		return false
 	}
 
 	// Stop runLoop() _first_, else it will restart run()
@@ -157,7 +167,7 @@ func (m *Monitor) Stop() error {
 	case <-m.runLoopChan: // not running
 		m.runMux.Unlock()
 		blip.Debug("%s: already stopped", m.monitorId)
-		return nil
+		return false
 	default: // running
 	}
 
@@ -178,9 +188,8 @@ func (m *Monitor) Stop() error {
 	// runLoop while this one is still running.
 	<-runLoopDone
 
-	event.Sendf(event.MONITOR_STOPPED, "%s", m.monitorId)
 	status.Monitor(m.monitorId, status.MONITOR, "stopped at %s", blip.FormatTime(time.Now()))
-	return nil
+	return true
 }
 
 // Start starts the monitor. If it's already running, it returns an error.
@@ -248,6 +257,15 @@ func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 		// If successful, the monitor is running but that does _not_ mean metrics
 		// are collecting because collectors can fail for different reasons.
 		err := m.startup(stopChan)
+
+		// If Stop interrupted startup, startup returns nil, but the monitor
+		// isn't running: don't clear errors or report it running
+		select {
+		case <-stopChan:
+			return
+		default:
+		}
+
 		m.setErr(err, false)
 		if err != nil {
 			if !sleep(stopChan, m.retry.NextBackOff()) {
@@ -654,6 +672,11 @@ func (m *Monitor) stop(lock bool, caller string) {
 func (m *Monitor) stopRun(runChan chan struct{}, caller string) {
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
+	select {
+	case <-runChan:
+		return // already stopped, usually by Stop, which might have returned
+	default:
+	}
 	if m.runChan != runChan {
 		blip.Debug("%s: stop called by %s for obsolete run (noop)", m.monitorId, caller)
 		return

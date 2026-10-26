@@ -319,7 +319,8 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 //   - []metrics is sorted ascending by Interval
 //
 // Collect returns when all collectors it starts return, or when emrCtx
-// (engine max runtime) expires. The former is the normal case.
+// (engine max runtime) expires or is canceled. The former is the normal case.
+// A canceled emrCtx isn't counted as an EMR timeout.
 //
 // Both metrics and an error can be returned in the case of partially success:
 // some collectors work but others fail. Caller should check returned metrics
@@ -444,6 +445,9 @@ SWEEP:
 	// are missing from this interval. Not an error event because, when the
 	// host is CPU-starved, this can happen every interval for every monitor.
 	notReturned := len(running)
+	if emrTimeout && emrCtx.Err() == context.Canceled {
+		emrTimeout = false // canceled (stopping), not timed out
+	}
 	if emrTimeout {
 		e.counters.emrTimeouts.Add(1)
 		e.counters.domainsNotStarted.Add(uint64(notStarted))

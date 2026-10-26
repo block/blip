@@ -219,12 +219,9 @@ func TestLevelCollectorCountsDroppedTicks(t *testing.T) {
 	c.emr = 2 * time.Second // longer than the slow collection, so the EMR doesn't expire
 	c.paused = false
 
-	// Run returns on the 7th tick: each tick reads one value, then stopChan is closed
-	stopChan := make(chan struct{}, 6)
-	for i := 0; i < 6; i++ {
-		stopChan <- struct{}{}
-	}
-	close(stopChan)
+	// Run returns on the 7th tick, after 6 ticks
+	stopChan := make(chan struct{})
+	defer StopAfterTicks(6, stopChan)()
 	doneChan := make(chan struct{})
 	go c.Run(stopChan, doneChan)
 	select {
@@ -260,7 +257,7 @@ func TestLevelCollectorCountsDroppedMetrics(t *testing.T) {
 	for i := 0; i < cap(c.metricsChan); i++ {
 		c.metricsChan <- nil
 	}
-	c.collect(1, level, time.Now())
+	c.collect(context.Background(), 1, level, time.Now())
 
 	if v := counters(t, monitorId)[status.LEVEL_METRICS_DROPPED]; v != 1 {
 		t.Errorf("%s = %d, expected 1", status.LEVEL_METRICS_DROPPED, v)

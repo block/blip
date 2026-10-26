@@ -140,6 +140,11 @@ var (
 	tickerMux      = &sync.Mutex{}   // make go test -race happy
 	tickerDuration = 1 * time.Second // used for testing
 	timeElapsed    = 1 * time.Second // used for testing
+
+	// tickHook, if set, is called by Run after each tick with the tick number
+	// (1 for the first tick). Tests use it to stop Run after a number of ticks
+	// by closing stopChan, which Run sees before it collects at that tick.
+	tickHook func(tick uint) // used for testing
 )
 
 // recvMetrics receives metrics on metricsChan and send them to all the sinks.
@@ -225,7 +230,7 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 
 	status.Monitor(c.monitorId, status.LEVEL_COLLECTOR, "started at %s (paused until plan change)", blip.FormatTime(time.Now()))
 	tickerMux.Lock() // make go test -race happy
-	td, te := tickerDuration, timeElapsed
+	td, te, onTick := tickerDuration, timeElapsed, tickHook
 	tickerMux.Unlock()
 	s := -1 * te // -1 so first tick=0 and all levels collected
 	interval := uint(0)
@@ -241,35 +246,35 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 		c.engine.Stop() // stop all collectors and run their cleanup func
 	}
 
+	// collectCtx is canceled when stopChan is closed, so a stop doesn't wait for
+	// a collection in progress
+	collectCtx, cancelCollect := context.WithCancel(context.Background())
+	defer cancelCollect()
+	go func() {
+		select {
+		case <-stopChan:
+			cancelCollect()
+		case <-collectCtx.Done():
+		}
+	}()
+
 	var lastTick time.Time
-	countTicks := false // see below
+	tick := uint(0)
 	for {
 		// Wait for the next tick or stop, whichever is first, so stopping
 		// doesn't wait up to one tick. Stop closes stopChan.
-		//
-		// Tests also send values on a buffered stopChan to run a number of
-		// ticks: each tick receives one value, and the close after the last
-		// value stops Run on the next tick. Once a value is received, Run
-		// keeps that one-per-tick behavior: the value counts for the next
-		// tick, and later values and the close are received after each tick.
 		var startTime time.Time
-		gotValue := false
-		if countTicks {
-			startTime = <-ticker.C
-		} else {
-			select {
-			case _, ok := <-stopChan:
-				if !ok {
-					stop()
-					return nil
-				}
-				countTicks = true
-				gotValue = true
-				startTime = <-ticker.C
-			case startTime = <-ticker.C:
-			}
+		select {
+		case <-stopChan:
+			stop()
+			return nil
+		case startTime = <-ticker.C:
 		}
 		s = s + te
+		tick++
+		if onTick != nil {
+			onTick(tick)
+		}
 
 		// Count ticks dropped while the previous iteration was blocked, usually
 		// by a slow collection. Run doesn't catch up on dropped ticks, so each one
@@ -281,16 +286,11 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 
 		// Was monitor stopped? Check again because select picks randomly
 		// when both the tick and stop are ready.
-		if !gotValue {
-			select {
-			case _, ok := <-stopChan: // yes, return immediately
-				if ok {
-					break
-				}
-				stop()
-				return nil
-			default: // no
-			}
+		select {
+		case <-stopChan: // yes, return immediately
+			stop()
+			return nil
+		default: // no
 		}
 
 		// Paused because no plan is set or it's being changed?
@@ -316,7 +316,7 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 
 		// Collect metrics at this level
 		interval += 1
-		c.collect(interval, c.levels[level].Name, startTime)
+		c.collect(collectCtx, interval, c.levels[level].Name, startTime)
 
 		c.stateMux.Unlock() // -- UNLOCK --
 	}
@@ -339,7 +339,10 @@ func (c *lco) stopChangePlan() {
 	c.changePlanDoneChan = nil
 }
 
-func (c *lco) collect(interval uint, levelName string, startTime time.Time) {
+// collect collects metrics at one level and sends them to the sinks. If ctx
+// is canceled (the LCO is stopping), the collection is canceled, and its
+// metrics are dropped.
+func (c *lco) collect(ctx context.Context, interval uint, levelName string, startTime time.Time) {
 	status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s: collecting", c.plan.Name, levelName)
 	defer func() {
 		if err := recover(); err != nil { // catch panic in engine and TransformMetrics
@@ -355,10 +358,14 @@ func (c *lco) collect(interval uint, levelName string, startTime time.Time) {
 	//
 	// Collect all metrics at this level. This is where metrics
 	// collection begins. Then Engine.Collect does the real work.
-	emrCtx, emrCancel := context.WithDeadline(context.Background(), startTime.Add(c.emr))
+	emrCtx, emrCancel := context.WithDeadline(ctx, startTime.Add(c.emr))
 	defer emrCancel()
 	metrics, err := c.engine.Collect(emrCtx, interval, levelName, startTime)
 	blip.Debug("%s: level %s: done in %s", c.monitorId, levelName, metrics[0].End.Sub(metrics[0].Begin))
+	if ctx.Err() != nil {
+		blip.Debug("%s: level %s: stopped, dropping metrics", c.monitorId, levelName)
+		return
+	}
 
 	if err != nil {
 		status.Monitor(c.monitorId, "error:collect", "%s", err.Error())

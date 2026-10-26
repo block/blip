@@ -698,17 +698,18 @@ func TestLoaderTryStart(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, monitor.START_DECLINED, res)
 
-	_, err = loader.TryStart("not-loaded")
+	res, err = loader.TryStart("not-loaded")
 	assert.ErrorIs(t, err, monitor.ErrMonitorNotLoaded)
+	assert.Equal(t, monitor.START_ERROR, res)
 
-	// Stuck stop: start is pending, then reported as running (pending)
+	// Stuck stop: start is pending, and stays pending if started again
 	assert.ErrorIs(t, loader.Stop("try1", true), monitor.ErrStopTimeout)
 	res, err = loader.TryStart("try1")
 	require.NoError(t, err)
 	assert.Equal(t, monitor.START_PENDING, res)
 	res, err = loader.TryStart("try1")
 	require.NoError(t, err)
-	assert.Equal(t, monitor.START_RUNNING, res)
+	assert.Equal(t, monitor.START_PENDING, res)
 	require.Eventually(t, func() bool {
 		return strings.Contains(st.lastEventMsg(event.MONITOR_STOP_TIMEOUT, "try1"), "waiting for it to stop")
 	}, 3*time.Second, 5*time.Millisecond, "stop timeout report doesn't mention the pending start")

@@ -63,9 +63,9 @@ Error message on 4xx or 5xx status code.
 
 ### Status Codes
 
-<strong>202</strong>: Monitor is still stopping; it starts when it has stopped
+<strong>202</strong>: A monitor with the same ID is still stopping; the monitor starts when it has stopped. Starting it again while it waits also returns 202.
 
-<strong>409</strong>: Error starting monitor, monitor already running or waiting to start, or the `StartMonitor` plugin declined to start it
+<strong>409</strong>: Error starting monitor, monitor already running, or the `StartMonitor` plugin declined to start it
 
 ## POST /monitors/stop?id=ID
 

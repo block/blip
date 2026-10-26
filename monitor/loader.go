@@ -74,8 +74,9 @@ type StartResult int
 const (
 	START_OK       StartResult = iota // monitor started
 	START_PENDING                     // monitor with the same ID is still stopping; monitor starts when that stop finishes
-	START_RUNNING                     // monitor was already running or pending start
+	START_RUNNING                     // monitor was already running
 	START_DECLINED                    // Plugins.StartMonitor returned false, so the monitor was not started
+	START_ERROR                       // monitor was not started because of the returned error
 )
 
 // Loader is the singleton monitor loader and repo. It's created by the server
@@ -216,7 +217,7 @@ func (ml *Loader) start(m *loadedMonitor) (StartResult, error) {
 
 	// Start the MySQL monitor, which starts metrics collection
 	if err := m.monitor.Start(); err != nil {
-		return START_RUNNING, err
+		return START_ERROR, err
 	}
 	m.started = true
 	return START_OK, nil
@@ -715,8 +716,9 @@ func (ml *Loader) Start(monitorId string, lock bool) error {
 
 // TryStart starts a monitor like Start (with lock true) and returns whether
 // the monitor started, is pending start, was already running, or was declined
-// by Plugins.StartMonitor. It returns ErrMonitorNotLoaded if the monitor isn't
-// loaded.
+// by Plugins.StartMonitor. It returns START_ERROR and an error if the monitor
+// didn't start because of an error, like ErrMonitorNotLoaded if the monitor
+// isn't loaded.
 func (ml *Loader) TryStart(monitorId string) (StartResult, error) {
 	ml.Lock()
 	defer ml.Unlock()
@@ -727,9 +729,12 @@ func (ml *Loader) tryStart(monitorId string) (StartResult, error) {
 	/* -- CALLER MUST LOCK Loader -- */
 	m, ok := ml.repo[monitorId]
 	if !ok {
-		return START_RUNNING, ErrMonitorNotLoaded
+		return START_ERROR, ErrMonitorNotLoaded
 	}
-	if m.started || m.startPending {
+	if m.startPending {
+		return START_PENDING, nil
+	}
+	if m.started {
 		return START_RUNNING, nil
 	}
 	return ml.start(m)

@@ -4,6 +4,7 @@ package server_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -98,15 +99,41 @@ func TestAPIStatusMonitorsCountersGet(t *testing.T) {
 	}
 }
 
+// blockingDbFactory blocks Make for one monitor until release is closed, so a
+// stop of that monitor during startup is stuck until then.
+type blockingDbFactory struct {
+	blip.DbFactory
+	monitorId string
+	entered   chan struct{} // closed when Make is first called for monitorId
+	once      *sync.Once
+	release   chan struct{}
+}
+
+func (f blockingDbFactory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
+	if cfg.MonitorId == f.monitorId {
+		f.once.Do(func() { close(f.entered) })
+		<-f.release
+	}
+	return f.DbFactory.Make(cfg)
+}
+
 func TestAPIMonitorsStart(t *testing.T) {
-	// POST /monitors/start returns 200 when the monitor starts, and 409 when
-	// it's already running or the StartMonitor plugin declines to start it.
+	// POST /monitors/start returns 200 when the monitor starts, 202 when a
+	// monitor with the same ID is still stopping, and 409 when it's already
+	// running or the StartMonitor plugin declines to start it.
 	cfg := blip.DefaultConfig()
+	dbf := blockingDbFactory{
+		DbFactory: dbconn.NewConnFactory(nil, nil),
+		monitorId: "api-pending",
+		entered:   make(chan struct{}),
+		once:      &sync.Once{},
+		release:   make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(dbf.release) })
 	ml := monitor.NewLoader(monitor.LoaderArgs{
-		Config: cfg,
-		Factories: blip.Factories{
-			DbConn: dbconn.NewConnFactory(nil, nil),
-		},
+		Config:     cfg,
+		Factories:  blip.Factories{DbConn: dbf},
 		PlanLoader: plan.NewLoader(nil),
 		RDSLoader:  aws.RDSLoader{ClientFactory: mock.RDSClientFactory{}},
 		Plugins: blip.Plugins{
@@ -114,6 +141,7 @@ func TestAPIMonitorsStart(t *testing.T) {
 				return []blip.ConfigMonitor{
 					{MonitorId: "api-start", Hostname: "127.0.0.1:1"},
 					{MonitorId: "api-declined", Hostname: "127.0.0.1:1"},
+					{MonitorId: "api-pending", Hostname: "127.0.0.1:1"},
 				}, nil
 			},
 			StartMonitor: func(cfg blip.ConfigMonitor) bool { return cfg.MonitorId != "api-declined" },
@@ -124,17 +152,39 @@ func TestAPIMonitorsStart(t *testing.T) {
 	}
 	defer status.RemoveMonitor("api-start")
 	defer status.RemoveMonitor("api-declined")
+	defer status.RemoveMonitor("api-pending")
 	ts := httptest.NewServer(server.NewAPI(cfg, ml))
 	defer ts.Close()
 
-	stopped := make(chan struct{})
-	var stoppedOnce sync.Once
+	var mux sync.Mutex
+	stopped := map[string]int{} // monitor ID => monitor-stopped events
 	event.Subscribe(mock.EventReceiver{RecvFunc: func(e event.Event) {
-		if e.Event == event.MONITOR_STOPPED && e.MonitorId == "api-start" {
-			stoppedOnce.Do(func() { close(stopped) })
+		if e.Event == event.MONITOR_STOPPED {
+			mux.Lock()
+			stopped[e.MonitorId]++
+			mux.Unlock()
 		}
 	}})
 	defer event.RemoveSubscribers()
+
+	// The loader sends the stopped event after the stop returns. Wait for it,
+	// else it races with the next test, which sets the global event receiver.
+	waitStopped := func(monitorId string, n int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			mux.Lock()
+			got := stopped[monitorId]
+			mux.Unlock()
+			if got >= n {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timeout waiting for %d monitor-stopped events for %s, got %d", n, monitorId, got)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 
 	post := func(path string) int {
 		t.Helper()
@@ -157,12 +207,45 @@ func TestAPIMonitorsStart(t *testing.T) {
 	if got := post("/monitors/stop?id=api-start"); got != http.StatusOK {
 		t.Errorf("stop: got %d, expected 200", got)
 	}
+	waitStopped("api-start", 1)
 
-	// The loader sends the stopped event after the stop returns. Wait for it,
-	// else it races with the next test, which sets the global event receiver.
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Error("timeout waiting for monitor-stopped event")
+	// Start api-pending and stop it while it's stuck in startup (making its
+	// DB), so the stop times out after the default stop timeout (3s). Starting it while it's still stopping is
+	// pending, and starting it again is still pending, not already running.
+	if got := post("/monitors/start?id=api-pending"); got != http.StatusOK {
+		t.Errorf("start api-pending: got %d, expected 200", got)
 	}
+	select {
+	case <-dbf.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for api-pending to make its DB")
+	}
+	if got := post("/monitors/stop?id=api-pending"); got != http.StatusAccepted {
+		t.Errorf("stop stuck monitor: got %d, expected 202", got)
+	}
+	for i := 1; i <= 2; i++ {
+		if got := post("/monitors/start?id=api-pending"); got != http.StatusAccepted {
+			t.Errorf("start %d while stopping: got %d, expected 202", i, got)
+		}
+	}
+
+	// When the old run stops, the pending start runs, and then the monitor
+	// is already running
+	releaseOnce.Do(func() { close(dbf.release) })
+	waitStopped("api-pending", 1)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := post("/monitors/start?id=api-pending")
+		if got == http.StatusConflict {
+			break
+		}
+		if got != http.StatusAccepted || time.Now().After(deadline) {
+			t.Fatalf("start after stuck stop finished: got %d, expected 409 (already running)", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := post("/monitors/stop?id=api-pending"); got != http.StatusOK {
+		t.Errorf("stop api-pending: got %d, expected 200", got)
+	}
+	waitStopped("api-pending", 2)
 }

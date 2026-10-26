@@ -13,6 +13,7 @@ import (
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/event"
 	"github.com/cashapp/blip/v2/ha"
+	"github.com/cashapp/blip/v2/internal/stopchan"
 	"github.com/cashapp/blip/v2/status"
 )
 
@@ -132,6 +133,11 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "running")
 
+	// The state check uses a context that's canceled on stop, so a stop
+	// doesn't wait for the read-only query to a hung or unreachable MySQL
+	ctx, cancel := stopchan.Context(stopChan)
+	defer cancel()
+
 	for {
 		select {
 		case <-stopChan:
@@ -139,23 +145,27 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 		default:
 		}
 
-		pch.CheckState()
+		pch.CheckState(ctx)
 
 		wait := 1 * time.Second
 		if pch.curr.state == blip.STATE_OFFLINE {
 			wait = pch.retry.NextBackOff()
 		}
-		if !sleep(stopChan, wait) {
+		if !stopchan.Sleep(stopChan, wait) {
 			return nil // stopped
 		}
 	}
 }
 
 // CheckState checks the current state and changes state when necessary.
-// This is the main logic, called periodically by Run.
-func (pch *planChanger) CheckState() {
+// This is the main logic, called periodically by Run. It does nothing if ctx
+// is canceled (the PCH is stopping) while it checks the state.
+func (pch *planChanger) CheckState(ctx context.Context) {
 	now := Now()
-	obsv := pch.state()
+	obsv := pch.state(ctx)
+	if ctx.Err() != nil {
+		return // stopped
+	}
 
 	pch.Lock()
 	defer pch.Unlock()
@@ -239,8 +249,12 @@ func (pch *planChanger) lcoChangePlan(state, planName string) error {
 
 const readOnlyQuery = "SELECT @@read_only, @@super_read_only"
 
-// state queries MySQL to ascertain the HA and read-only state.
-func (pch *planChanger) state() string {
+// readOnlyTimeout is how long the PCH waits for readOnlyQuery
+var readOnlyTimeout = 10 * time.Second
+
+// state queries MySQL to ascertain the HA and read-only state. If ctx is
+// canceled, it returns STATE_NONE, which the caller must ignore.
+func (pch *planChanger) state(ctx context.Context) string {
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "checking HA standby")
 	if pch.ha.Standby() {
 		return blip.STATE_STANDBY
@@ -250,9 +264,12 @@ func (pch *planChanger) state() string {
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "checking MySQL read-only")
 
 	var ro, sro int
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	err := pch.db.QueryRowContext(ctx, readOnlyQuery).Scan(&ro, &sro)
+	qctx, cancel := context.WithTimeout(ctx, readOnlyTimeout)
+	err := pch.db.QueryRowContext(qctx, readOnlyQuery).Scan(&ro, &sro)
 	cancel()
+	if ctx.Err() != nil {
+		return blip.STATE_NONE // stopped
+	}
 	pch.setErr(err)
 	if err != nil {
 		blip.Debug(err.Error())

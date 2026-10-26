@@ -15,6 +15,7 @@ import (
 
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/internal/stopchan"
 	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/status"
 )
@@ -248,15 +249,8 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 
 	// collectCtx is canceled when stopChan is closed, so a stop doesn't wait for
 	// a collection in progress
-	collectCtx, cancelCollect := context.WithCancel(context.Background())
+	collectCtx, cancelCollect := stopchan.Context(stopChan)
 	defer cancelCollect()
-	go func() {
-		select {
-		case <-stopChan:
-			cancelCollect()
-		case <-collectCtx.Done():
-		}
-	}()
 
 	var lastTick time.Time
 	tick := uint(0)

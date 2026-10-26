@@ -6,11 +6,14 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/event"
 	"github.com/cashapp/blip/v2/status"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 type failingDBFactory struct{}
@@ -54,5 +57,50 @@ func TestMonitorStopDuringStartupIsNotRunning(t *testing.T) {
 	}
 	if got := status.ReportMonitors(monitorId)[monitorId][status.MONITOR]; !strings.HasPrefix(got, "stopped at") {
 		t.Errorf("monitor status %q, expected stopped at", got)
+	}
+}
+
+func TestMonitorStopEvent(t *testing.T) {
+	// Monitor.Stop sends MONITOR_STOPPED for the monitor, with the same
+	// message format as the Loader, and only when it stops the monitor.
+	const monitorId = "stop-event"
+	defer status.RemoveMonitor(monitorId)
+	var mux sync.Mutex
+	var stopped []event.Event
+	event.Subscribe(mock.EventReceiver{RecvFunc: func(e event.Event) {
+		if e.Event == event.MONITOR_STOPPED {
+			mux.Lock()
+			stopped = append(stopped, e)
+			mux.Unlock()
+		}
+	}})
+	defer event.RemoveSubscribers()
+
+	m := NewMonitor(MonitorArgs{
+		Config:  blip.ConfigMonitor{MonitorId: monitorId},
+		DbMaker: failingDBFactory{},
+	})
+	m.retry.InitialInterval = time.Minute // startup sleeps until Stop
+	m.retry.Reset()
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Stop(); err != nil { // already stopped: no event
+		t.Fatal(err)
+	}
+
+	mux.Lock()
+	defer mux.Unlock()
+	if len(stopped) != 1 {
+		t.Fatalf("got %d %s events, expected 1: %+v", len(stopped), event.MONITOR_STOPPED, stopped)
+	}
+	if stopped[0].MonitorId != monitorId {
+		t.Errorf("event MonitorId %q, expected %q", stopped[0].MonitorId, monitorId)
+	}
+	if !strings.HasPrefix(stopped[0].Message, "stopped in ") {
+		t.Errorf("event message %q, expected stopped in <duration>", stopped[0].Message)
 	}
 }

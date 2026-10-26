@@ -133,14 +133,17 @@ func (m *Monitor) DSN() string {
 
 // Stop stops the monitor. It is idempotent and thread-safe. It returns when
 // runLoop and all monitor subsystems have stopped, so it blocks for as long
-// as a subsystem takes to stop.
+// as a subsystem takes to stop. If it stopped the monitor, it sends event
+// MONITOR_STOPPED for the monitor with the message "stopped in <duration>",
+// like the Loader.
 //
 // Start/stop monitors only through the Loader. DO NOT call Start or
 // Stop directly, else the running state of the monitor and the Loader
 // will be out of sync.
 func (m *Monitor) Stop() error {
+	t0 := time.Now()
 	if m.halt() {
-		event.Sendf(event.MONITOR_STOPPED, "%s", m.monitorId)
+		m.event.Sendf(event.MONITOR_STOPPED, "stopped in %s", time.Since(t0))
 	}
 	return nil
 }

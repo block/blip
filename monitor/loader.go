@@ -68,7 +68,8 @@ type stoppingMonitor struct {
 // again after the first report: every stopReportFactor x stop timeout.
 const stopReportFactor = 10
 
-// StartResult is the result of starting a monitor with TryStart.
+// StartResult is the result of starting a monitor with TryStart. In v3,
+// TryStart will be folded into Start, which will return (StartResult, error).
 type StartResult int
 
 const (
@@ -704,7 +705,8 @@ func (ml *Loader) Count() uint {
 //
 // If lock is true, Start locks the Loader mutex. If lock is false, the caller
 // must hold the Loader mutex. The lock parameter is deprecated: Blip calls
-// Start only with lock true. It will be removed in v3.
+// Start only with lock true. It will be removed in v3, and Start will return
+// (StartResult, error) like TryStart.
 func (ml *Loader) Start(monitorId string, lock bool) error {
 	if lock {
 		ml.Lock()
@@ -719,6 +721,9 @@ func (ml *Loader) Start(monitorId string, lock bool) error {
 // by Plugins.StartMonitor. It returns START_ERROR and an error if the monitor
 // didn't start because of an error, like ErrMonitorNotLoaded if the monitor
 // isn't loaded.
+//
+// TryStart is an interim v2 API: in v3, it will be folded into Start, which
+// will return (StartResult, error), and the lock parameter will be removed.
 func (ml *Loader) TryStart(monitorId string) (StartResult, error) {
 	ml.Lock()
 	defer ml.Unlock()

@@ -237,6 +237,22 @@ func stopStatus(monitorId string) string {
 	return status.ReportMonitors(monitorId)[monitorId]["error:stop"]
 }
 
+// stopStatusAfter returns how long the error:stop status says the monitor has
+// been stopping: "not stopped after <d>; ...".
+func stopStatusAfter(t *testing.T, monitorId string) time.Duration {
+	t.Helper()
+	s := stopStatus(monitorId)
+	var after string
+	if _, err := fmt.Sscanf(s, "not stopped after %s", &after); err != nil {
+		t.Fatalf("error:stop status %q: %s", s, err)
+	}
+	d, err := time.ParseDuration(strings.TrimSuffix(after, ";"))
+	if err != nil {
+		t.Fatalf("error:stop status %q: %s", s, err)
+	}
+	return d
+}
+
 // --------------------------------------------------------------------------
 
 func TestLoaderUnloadStuckMonitor(t *testing.T) {
@@ -275,7 +291,7 @@ func TestLoaderUnloadStuckMonitor(t *testing.T) {
 	assert.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOP_TIMEOUT, "stuck1") == 1 },
 		time.Second, 5*time.Millisecond)
 	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, "ok1"))
-	assert.Contains(t, stopStatus("stuck1"), "not stopped after 200ms")
+	assert.GreaterOrEqual(t, stopStatusAfter(t, "stuck1"), 200*time.Millisecond)
 	countDone := make(chan uint)
 	go func() { countDone <- loader.Count() }()
 	select {
@@ -302,12 +318,14 @@ func TestLoaderUnloadStuckMonitor(t *testing.T) {
 	waitPrepared(t, st, 2, "stuck1")
 	assert.Empty(t, stopStatus("stuck1"))
 
-	// The new monitor stops normally
+	// The new monitor stops normally, within the stop timeout. The stop's
+	// events end with monitor-stopped, so once it's sent, a stop timeout
+	// would have been reported.
 	setIds(st, &ids)
-	t0 = time.Now()
 	require.NoError(t, loader.Load(context.Background()))
-	assert.Less(t, time.Since(t0), 200*time.Millisecond)
-	assert.Equal(t, 1, st.eventCount(event.MONITOR_STOP_TIMEOUT, "stuck1"))
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "stuck1") == 2 },
+		5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, 1, st.eventCount(event.MONITOR_STOP_TIMEOUT, "stuck1"), "new monitor didn't stop within the stop timeout")
 }
 
 func TestLoaderStopStuckMonitor(t *testing.T) {
@@ -598,6 +616,36 @@ func TestLoaderStopUnlocked(t *testing.T) {
 	assert.Empty(t, loader.Monitors())
 }
 
+func TestLoaderStopNotReportedAfterStopped(t *testing.T) {
+	// The stop timeout fires while the caller holds the Loader mutex (here, a
+	// Stop with lock=false), so the report waits for the mutex. If the
+	// monitor stops meanwhile, it must not be reported as stuck.
+	ids := []string{"late1"}
+	st, loader := setupStopTest(t, "50ms", &ids, nil)
+	defer status.RemoveMonitor("late1")
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(string) { <-release }
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "late1")
+
+	loader.Lock()
+	assert.ErrorIs(t, loader.Stop("late1", false), monitor.ErrStopTimeout)
+	time.Sleep(50 * time.Millisecond) // the stop timeout report waits for the mutex
+	releaseOnce.Do(func() { close(release) })
+	time.Sleep(50 * time.Millisecond) // the monitor stops
+	loader.Unlock()
+
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "late1") == 1 },
+		5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, "late1"), "stop reported after the monitor stopped")
+	assert.Empty(t, stopStatus("late1"))
+}
+
 func TestLoaderStopEvents(t *testing.T) {
 	// Every stop sends one MONITOR_STOPPED event, with the monitor ID. A stop
 	// that misses the stop timeout sends MONITOR_STOP_TIMEOUT, then again every
@@ -630,7 +678,7 @@ func TestLoaderStopEvents(t *testing.T) {
 	assert.ErrorIs(t, loader.Stop("events2", true), monitor.ErrStopTimeout)
 	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOP_TIMEOUT, "events2") >= 2 },
 		2*time.Second, 5*time.Millisecond)
-	assert.Contains(t, stopStatus("events2"), "not stopped after 550ms")
+	assert.GreaterOrEqual(t, stopStatusAfter(t, "events2"), 550*time.Millisecond)
 	releaseOnce.Do(func() { close(release) })
 	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "events2") == 1 },
 		time.Second, 5*time.Millisecond)

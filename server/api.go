@@ -168,14 +168,16 @@ func (api *API) monitorsReload(w http.ResponseWriter, r *http.Request) {
 
 func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("%v", r)
-	monitorId, _, ok := api.monitorId(w, r)
+	monitorId, mon, ok := api.monitorId(w, r)
 	if !ok {
 		return // monitorId() wrote error response
 	}
 	blip.Debug("start %s", monitorId)
 	// Start through the loader, not Monitor.Start, so the loader knows the
-	// monitor is running and doesn't start it while it's still stopping
-	res, err := api.monitorLoader.TryStart(monitorId)
+	// monitor is running and doesn't start it while it's still stopping.
+	// Use the monitor's ID, not monitorId, which has CR and LF removed for
+	// logging and messages.
+	res, err := api.monitorLoader.TryStart(mon.MonitorId())
 	if err != nil {
 		errMsg := html.EscapeString(fmt.Sprintf("Error starting monitor %s: %s", html.EscapeString(monitorId), err))
 		http.Error(w, errMsg, http.StatusConflict)
@@ -195,14 +197,15 @@ func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 
 func (api *API) monitorsStop(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("%v", r)
-	monitorId, _, ok := api.monitorId(w, r)
+	monitorId, mon, ok := api.monitorId(w, r)
 	if !ok {
 		return // monitorId() wrote error response
 	}
 	blip.Debug("stop %s", monitorId)
 	// Stop through the loader, not Monitor.Stop, so the loader knows the
-	// monitor is stopped and the wait for it to stop is bounded
-	if err := api.monitorLoader.Stop(monitorId, true); err != nil {
+	// monitor is stopped and the wait for it to stop is bounded. Use the
+	// monitor's ID, not monitorId, which has CR and LF removed.
+	if err := api.monitorLoader.Stop(mon.MonitorId(), true); err != nil {
 		if err == monitor.ErrStopTimeout {
 			http.Error(w, fmt.Sprintf("monitor %s is still stopping", html.EscapeString(monitorId)), http.StatusAccepted)
 			return
@@ -252,7 +255,9 @@ func (api *API) monitorId(w http.ResponseWriter, r *http.Request) (string, *moni
 		http.Error(w, fmt.Sprintf("monitor %s not loaded", html.EscapeString(monitorId)), http.StatusNotFound)
 		return "", nil, false
 	}
-	// Avoid code scanning alert "Log entries created from user input"
+	// Avoid code scanning alert "Log entries created from user input". The
+	// returned ID is only for logging and messages: use mon.MonitorId() to
+	// find the monitor again.
 	monitorId = strings.Replace(monitorId, "\n", "", -1)
 	monitorId = strings.Replace(monitorId, "\r", "", -1)
 	return monitorId, mon, true

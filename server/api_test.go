@@ -142,6 +142,7 @@ func TestAPIMonitorsStart(t *testing.T) {
 					{MonitorId: "api-start", Hostname: "127.0.0.1:1"},
 					{MonitorId: "api-declined", Hostname: "127.0.0.1:1"},
 					{MonitorId: "api-pending", Hostname: "127.0.0.1:1"},
+					{MonitorId: "api-new\nline", Hostname: "127.0.0.1:1"},
 				}, nil
 			},
 			StartMonitor: func(cfg blip.ConfigMonitor) bool { return cfg.MonitorId != "api-declined" },
@@ -153,6 +154,7 @@ func TestAPIMonitorsStart(t *testing.T) {
 	defer status.RemoveMonitor("api-start")
 	defer status.RemoveMonitor("api-declined")
 	defer status.RemoveMonitor("api-pending")
+	defer status.RemoveMonitor("api-new\nline")
 	ts := httptest.NewServer(server.NewAPI(cfg, ml))
 	defer ts.Close()
 
@@ -208,6 +210,21 @@ func TestAPIMonitorsStart(t *testing.T) {
 		t.Errorf("stop: got %d, expected 200", got)
 	}
 	waitStopped("api-start", 1)
+
+	// An ID with CR or LF: the API removes them for logging, but it must
+	// start and stop the monitor with the real ID. If the stop didn't stop
+	// it, the second start would return 409 (already running).
+	const nlId = "api-new\nline"
+	nlPath := "?id=" + url.QueryEscape(nlId)
+	for i := 1; i <= 2; i++ {
+		if got := post("/monitors/start" + nlPath); got != http.StatusOK {
+			t.Errorf("start %d of ID with newline: got %d, expected 200", i, got)
+		}
+		if got := post("/monitors/stop" + nlPath); got != http.StatusOK {
+			t.Errorf("stop %d of ID with newline: got %d, expected 200", i, got)
+		}
+		waitStopped(nlId, i)
+	}
 
 	// Start api-pending and stop it while it's stuck in startup (making its
 	// DB), so the stop times out after the default stop timeout (3s). Starting it while it's still stopping is

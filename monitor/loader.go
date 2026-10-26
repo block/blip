@@ -846,7 +846,6 @@ func (ml *Loader) runStop(monitorId string, sm *stoppingMonitor) {
 	wait := ml.stopTimeout
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	d := time.Duration(0)
 WAIT:
 	for {
 		select {
@@ -854,8 +853,7 @@ WAIT:
 			break WAIT
 		case <-timer.C:
 		}
-		d += wait
-		if ml.stopTimedOut(monitorId, sm, d) {
+		if ml.stopTimedOut(monitorId, sm) {
 			stuck = true
 		}
 		wait = stopReportFactor * ml.stopTimeout
@@ -875,16 +873,19 @@ WAIT:
 	ml.stopped(monitorId, sm, stuck)
 }
 
-// stopTimedOut reports a monitor that hasn't stopped after d, and returns true
-// if it reported it. It returns false if the monitor stopped as the timer
-// fired. It's called only by runStop.
-func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor, d time.Duration) bool {
+// stopTimedOut reports a monitor that hasn't stopped, with how long it has been
+// stopping, and returns true if it reported it. It returns false if the
+// monitor has stopped, which it checks with the Loader mutex held because it
+// can wait for the mutex. It's called only by runStop.
+func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor) bool {
+	ml.Lock()
 	select {
 	case <-sm.done:
+		ml.Unlock()
 		return false // stopped
 	default:
 	}
-	ml.Lock()
+	d := time.Since(sm.begin).Round(time.Millisecond)
 	status.Monitor(monitorId, "error:stop", "not stopped after %s; stop began at %s", d, blip.FormatTime(sm.begin))
 	msg := fmt.Sprintf("not stopped after %s; still stopping in the background", d)
 	if m, ok := ml.repo[monitorId]; ok && m.startPending {
@@ -893,7 +894,7 @@ func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor, d time.Dur
 	ml.Unlock()
 
 	blip.Debug("%s: %s", monitorId, msg)
-	event.MonitorReceiver{MonitorId: monitorId}.Error(event.MONITOR_STOP_TIMEOUT, msg)
+	sm.monitor.event.Error(event.MONITOR_STOP_TIMEOUT, msg)
 	return true
 }
 

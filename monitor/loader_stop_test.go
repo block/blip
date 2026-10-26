@@ -661,6 +661,89 @@ func TestLoaderStopNotReportedAfterStopped(t *testing.T) {
 	assert.Empty(t, stopStatus("late1"))
 }
 
+func TestLoaderStopWaitsForRemovedMonitor(t *testing.T) {
+	// Stop and Unload (POST /monitors/stop) of a monitor ID that a reload has
+	// just removed or replaced must wait for the old monitor's stop, which is
+	// still in flight, not return nil at once.
+	ids := []string{"gone1"}
+	st, loader := setupStopTest(t, "200ms", &ids, nil)
+	defer status.RemoveMonitor("gone1")
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(string) { <-release }
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "gone1")
+
+	// Unloaded: the monitor is no longer in the repo but is still stopping
+	setIds(st, &ids)
+	require.NoError(t, loader.Load(context.Background()))
+	assert.Empty(t, loader.Monitors())
+	t0 := time.Now()
+	assert.ErrorIs(t, loader.Stop("gone1", true), monitor.ErrStopTimeout)
+	assert.GreaterOrEqual(t, time.Since(t0), 200*time.Millisecond)
+	assert.ErrorIs(t, loader.Unload("gone1", true), monitor.ErrStopTimeout)
+
+	// Replaced: a new monitor with the same ID is loaded and its start is
+	// pending until the old monitor stops
+	setIds(st, &ids, "gone1")
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	assert.Equal(t, []string{"gone1"}, monitorIds(loader.Monitors()))
+	t0 = time.Now()
+	assert.ErrorIs(t, loader.Stop("gone1", true), monitor.ErrStopTimeout)
+	assert.GreaterOrEqual(t, time.Since(t0), 200*time.Millisecond)
+
+	// Stop canceled the pending start: when the old monitor stops, a waiting
+	// Stop returns nil and the new monitor doesn't start
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- loader.Stop("gone1", true) }()
+	time.Sleep(20 * time.Millisecond)
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-stopErr:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop didn't return after the old monitor stopped")
+	}
+	assert.Equal(t, 1, st.eventCount(event.MONITOR_STOPPED, "gone1"))
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 1, st.preparedCount("gone1"), "pending start not canceled by Stop")
+	assert.NoError(t, loader.Stop("gone1", true))
+}
+
+func TestLoaderLoadContext(t *testing.T) {
+	// If ctx ends while Load waits for removed monitors to stop, Load returns
+	// ctx.Err(), but the removed monitors are already unloaded.
+	ids := []string{"ctx1"}
+	st, loader := setupStopTest(t, "5s", &ids, nil)
+	defer status.RemoveMonitor("ctx1")
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(string) { <-release }
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "ctx1")
+
+	setIds(st, &ids)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	assert.ErrorIs(t, loader.Load(ctx), context.DeadlineExceeded)
+	assert.Less(t, time.Since(t0), 2*time.Second)
+	assert.Empty(t, loader.Monitors())
+
+	releaseOnce.Do(func() { close(release) })
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "ctx1") == 1 },
+		5*time.Second, 5*time.Millisecond)
+}
+
 func TestLoaderStopEvents(t *testing.T) {
 	// Every stop sends one MONITOR_STOPPED event, with the monitor ID. A stop
 	// that misses the stop timeout sends MONITOR_STOP_TIMEOUT, then again every

@@ -259,12 +259,16 @@ func wait(n int) int {
 //
 // If Load returns error, the currently loaded monitors are not affected.
 // The error indicates a problem loading monitors or a validation error.
+// The exception is ctx: see below.
 //
 // Monitors that are unloaded are stopped in parallel and outside the Loader
 // mutex. Load waits for them to stop, but no longer than the stop timeout
 // (config.monitor-loader.stop-timeout) or ctx. A monitor that hasn't stopped
 // by then is reported (event MONITOR_STOP_TIMEOUT and monitor status) and keeps
-// stopping in the background; Load does not return an error for it.
+// stopping in the background; Load does not return an error for it. If ctx
+// ends while Load waits, Load returns ctx.Err(), but the loaded monitors have
+// already been updated: the new monitors are loaded and the removed monitors
+// keep stopping in the background.
 //
 // This function is safe for concurrent use. Changes to the loaded monitors
 // are serialized, but waiting for monitors to stop is not.
@@ -276,7 +280,9 @@ func (ml *Loader) Load(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ml.waitStopped(ctx, stops, false)
+	if err := ml.waitStopped(ctx, stops, false); err != nil && err != ErrStopTimeout {
+		return err // ctx ended; the repo is already updated
+	}
 	return nil
 }
 
@@ -751,7 +757,10 @@ func (ml *Loader) tryStart(monitorId string) (StartResult, error) {
 //
 // Stop waits for the monitor to stop, but no longer than the stop timeout
 // (config.monitor-loader.stop-timeout). It returns ErrStopTimeout if the
-// monitor is still stopping; it keeps stopping in the background.
+// monitor is still stopping; it keeps stopping in the background. If an
+// earlier monitor with the same ID is still stopping because it was unloaded
+// or replaced (by Load or Unload), Stop waits for that stop the same way.
+// Stop also cancels a pending start of the monitor.
 //
 // If lock is true, Stop locks the Loader mutex to begin the stop, then waits
 // without the mutex. If lock is false, the caller must hold the Loader mutex,
@@ -766,19 +775,26 @@ func (ml *Loader) Stop(monitorId string, lock bool) error {
 		m.startPending = false
 		sm = ml.stop(m)
 	}
+	if sm == nil {
+		sm = ml.stopping[monitorId] // unloaded or replaced monitor; nil if none
+	}
 	if lock {
 		ml.Unlock()
 	}
 	return ml.waitStopped(context.Background(), []*stoppingMonitor{sm}, !lock)
 }
 
-// Unload stops and removes a monitor. It waits for the monitor to stop and
-// takes the lock argument, which is deprecated, the same as Stop.
+// Unload stops and removes a monitor. It waits for the monitor to stop, or
+// for an earlier monitor with the same ID that is still stopping, and takes
+// the lock argument, which is deprecated, the same as Stop.
 func (ml *Loader) Unload(monitorId string, lock bool) error {
 	if lock {
 		ml.Lock()
 	}
 	sm := ml.unload(monitorId)
+	if sm == nil {
+		sm = ml.stopping[monitorId] // unloaded or replaced monitor; nil if none
+	}
 	if lock {
 		ml.Unlock()
 	}

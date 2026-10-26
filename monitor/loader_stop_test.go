@@ -431,9 +431,10 @@ func TestLoaderUnloadParallel(t *testing.T) {
 
 func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	// Hammer Load, StartMonitors, Start, and Stop concurrently (for the race
-	// detector), then check that the Loader's state converges: every loaded
-	// monitor can be started and is prepared, and unloading all of them stops
-	// them without a stop timeout.
+	// detector), then check that the Loader's state converges: after a final
+	// Load and StartMonitors, every loaded monitor is running (once any earlier
+	// stop of its ID finishes) and is prepared, and unloading all of them
+	// stops them without a stop timeout.
 	all := makeIds("cc", 8)
 	ids := append([]string{}, all...)
 	st, loader := setupStopTest(t, "5s", &ids, nil)
@@ -483,6 +484,25 @@ func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	require.NoError(t, loader.Load(context.Background()))
 	loader.StartMonitors()
 	assert.ElementsMatch(t, all, monitorIds(loader.Monitors()))
+
+	// TryStart returns START_OK if StartMonitors left a monitor stopped, and
+	// START_PENDING while it waits for an earlier stop of its ID
+	deadline := time.Now().Add(5 * time.Second)
+	for _, id := range all {
+		for {
+			res, err := loader.TryStart(id)
+			require.NoError(t, err)
+			if res != monitor.START_PENDING {
+				assert.Equal(t, monitor.START_RUNNING, res, "%s not running after StartMonitors", id)
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s start still pending", id)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitPrepared(t, st, 1, all...)
 
 	setIds(st, &ids)
 	require.NoError(t, loader.Load(context.Background()))
@@ -559,9 +579,10 @@ func (st *stopTest) stopEvents(monitorId string) []string {
 }
 
 func TestLoaderStopUnlocked(t *testing.T) {
-	// Stop, Unload, and Start with lock=false are called by a caller that holds
-	// the Loader mutex. Stop and Unload wait for the monitor to stop while the
-	// caller holds the mutex, but no longer than the stop timeout.
+	// Stop and Unload with lock=false are called by a caller that holds the
+	// Loader mutex. They wait for the monitor to stop while the caller holds
+	// the mutex, but no longer than the stop timeout. Start ignores lock and
+	// always locks the mutex, as in earlier v2 releases.
 	ids := []string{"unlocked1", "unlocked2"}
 	st, loader := setupStopTest(t, "200ms", &ids, nil)
 	defer status.RemoveMonitor("unlocked1")
@@ -586,8 +607,8 @@ func TestLoaderStopUnlocked(t *testing.T) {
 	loader.Lock()
 	assert.NoError(t, loader.Stop("unlocked1", false))
 	assert.Contains(t, status.ReportMonitors("unlocked1")["unlocked1"][status.MONITOR], "stopped at")
-	assert.NoError(t, loader.Start("unlocked1", false))
 	loader.Unlock()
+	assert.NoError(t, loader.Start("unlocked1", false)) // locks despite lock=false
 	waitPrepared(t, st, 2, "unlocked1")
 
 	// A stuck stop returns ErrStopTimeout after the stop timeout
@@ -742,6 +763,54 @@ func TestLoaderLoadContext(t *testing.T) {
 	releaseOnce.Do(func() { close(release) })
 	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "ctx1") == 1 },
 		5*time.Second, 5*time.Millisecond)
+}
+
+func TestLoaderStopNotTimedOutWhileMutexHeld(t *testing.T) {
+	// A Stop that's waiting for the monitor to stop returns nil if the monitor
+	// has stopped by the stop timeout, even if the Loader's cleanup after the
+	// stop is still waiting for the mutex (here, held by the test; in Blip,
+	// for example, by StartMonitors staggering many starts).
+	ids := []string{"held1"}
+	st, loader := setupStopTest(t, "200ms", &ids, nil)
+	defer status.RemoveMonitor("held1")
+
+	cleanupStarted := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	var startedOnce sync.Once
+	st.cleanup = func(string) {
+		startedOnce.Do(func() { close(cleanupStarted) })
+		<-release
+	}
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "held1")
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- loader.Stop("held1", true) }()
+	select {
+	case <-cleanupStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the stop to begin")
+	}
+
+	// Hold the mutex past the stop timeout, and let the monitor stop meanwhile
+	loader.Lock()
+	releaseOnce.Do(func() { close(release) })
+	time.Sleep(400 * time.Millisecond)
+	loader.Unlock()
+
+	select {
+	case err := <-stopErr:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop didn't return")
+	}
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "held1") == 1 },
+		5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, "held1"))
 }
 
 func TestLoaderStopEvents(t *testing.T) {

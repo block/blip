@@ -38,7 +38,7 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 
 ### Unreleased
 
-* Deprecated the `lock` parameter of `monitor.Loader` methods `Start`, `Stop`, and `Unload`; it will be removed in v3. `Start` now honors it, and `Stop` and `Unload` wait for the monitor to stop with either value.
+* Deprecated the `lock` parameter of `monitor.Loader` methods `Start`, `Stop`, and `Unload`; it will be removed in v3. `Start` still ignores it and always locks the loader, and `Stop` and `Unload` wait for the monitor to stop with either value.
 * Changed the `monitor-stopped` event to set the monitor ID and the message `stopped in <duration>`. Previously the event's monitor ID was empty and its message was the monitor ID.
 * Added `monitor-loader.stop-timeout` (default `3s`), how long a reload, unload, or API stop waits for a monitor to stop. Removed monitors now stop in parallel, outside the loader mutex, and a monitor that doesn't stop in time keeps stopping in the background.
 * Added the `monitor-stop-timeout` event and the `error:stop` monitor status for a monitor that hasn't stopped within the stop timeout. Blip reports it again every 10 times the stop timeout until the monitor stops.

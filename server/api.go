@@ -178,6 +178,17 @@ func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 	// Use the monitor's ID, not monitorId, which has CR and LF removed for
 	// logging and messages.
 	res, err := api.monitorLoader.TryStart(mon.MonitorId())
+	writeStartResult(w, monitorId, res, err)
+}
+
+// writeStartResult writes the response to POST /monitors/start for the result
+// of Loader.TryStart. monitorId is only for messages.
+func writeStartResult(w http.ResponseWriter, monitorId string, res monitor.StartResult, err error) {
+	if err == monitor.ErrMonitorNotLoaded {
+		// Removed by a reload after api.monitorId found it
+		http.Error(w, fmt.Sprintf("monitor %s not loaded", html.EscapeString(monitorId)), http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		errMsg := html.EscapeString(fmt.Sprintf("Error starting monitor %s: %s", html.EscapeString(monitorId), err))
 		http.Error(w, errMsg, http.StatusConflict)

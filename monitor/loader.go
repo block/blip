@@ -270,12 +270,14 @@ func wait(n int) int {
 // already been updated: the new monitors are loaded and the removed monitors
 // keep stopping in the background.
 //
+// Load sends events MONITORS_LOADING and MONITORS_LOADED with the Loader mutex
+// held, so the events of concurrent calls are paired. MONITORS_LOADED means the
+// loaded monitors have been updated (unless Load returns an error); it's sent
+// before Load waits for removed monitors to stop.
+//
 // This function is safe for concurrent use. Changes to the loaded monitors
 // are serialized, but waiting for monitors to stop is not.
 func (ml *Loader) Load(ctx context.Context) error {
-	event.Send(event.MONITORS_LOADING)
-	defer event.Send(event.MONITORS_LOADED)
-
 	stops, err := ml.loadAndUnload(ctx)
 	if err != nil {
 		return err
@@ -292,6 +294,9 @@ func (ml *Loader) Load(ctx context.Context) error {
 func (ml *Loader) loadAndUnload(ctx context.Context) ([]*stoppingMonitor, error) {
 	ml.Lock()
 	defer ml.Unlock()
+
+	event.Send(event.MONITORS_LOADING)
+	defer event.Send(event.MONITORS_LOADED)
 
 	defer func() {
 		status.Blip("monitors", "%d", len(ml.repo))
@@ -710,20 +715,17 @@ func (ml *Loader) Count() uint {
 // if its start is pending, or if Plugins.StartMonitor declines to start it.
 // Use TryStart to know which.
 //
-// If lock is true, Start locks the Loader mutex. If lock is false, the caller
-// must hold the Loader mutex. The lock parameter is deprecated: Blip calls
-// Start only with lock true. It will be removed in v3, and Start will return
+// Start always locks the Loader mutex: lock is ignored, as in earlier v2
+// releases, and deprecated. It will be removed in v3, and Start will return
 // (StartResult, error) like TryStart.
 func (ml *Loader) Start(monitorId string, lock bool) error {
-	if lock {
-		ml.Lock()
-		defer ml.Unlock()
-	}
+	ml.Lock()
+	defer ml.Unlock()
 	_, err := ml.tryStart(monitorId)
 	return err
 }
 
-// TryStart starts a monitor like Start (with lock true) and returns whether
+// TryStart starts a monitor like Start and returns whether
 // the monitor started, is pending start, was already running, or was declined
 // by Plugins.StartMonitor. It returns START_ERROR and an error if the monitor
 // didn't start because of an error, like ErrMonitorNotLoaded if the monitor
@@ -859,8 +861,7 @@ func (ml *Loader) runStop(monitorId string, sm *stoppingMonitor) {
 	}()
 
 	stuck := false
-	wait := ml.stopTimeout
-	timer := time.NewTimer(wait)
+	timer := time.NewTimer(ml.stopTimeout)
 	defer timer.Stop()
 WAIT:
 	for {
@@ -872,8 +873,7 @@ WAIT:
 		if ml.stopTimedOut(monitorId, sm) {
 			stuck = true
 		}
-		wait = stopReportFactor * ml.stopTimeout
-		timer.Reset(wait)
+		timer.Reset(stopReportFactor * ml.stopTimeout)
 	}
 
 	// Event receivers run synchronously, so don't send while holding the mutex
@@ -948,6 +948,10 @@ func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor, stuck bool) {
 // or ctx. It returns ErrStopTimeout if any are still stopping. Nil stops are
 // ignored.
 //
+// When the stop timeout expires, a monitor that has stopped (sm.done) counts
+// as stopped even if stopped hasn't run yet: it might be waiting for the Loader
+// mutex, which another caller (like StartMonitors) can hold for seconds.
+//
 // If mutexHeld is false, waitStopped waits until stopped has run for each stop,
 // so the stopped monitor's status is removed (if it was unloaded) and a pending
 // start of the same monitor ID has started. If mutexHeld is true, the caller
@@ -960,7 +964,7 @@ func (ml *Loader) waitStopped(ctx context.Context, stops []*stoppingMonitor, mut
 	}
 	timeout := time.NewTimer(ml.stopTimeout)
 	defer timeout.Stop()
-	for _, sm := range stops {
+	for i, sm := range stops {
 		if sm == nil {
 			continue
 		}
@@ -971,7 +975,17 @@ func (ml *Loader) waitStopped(ctx context.Context, stops []*stoppingMonitor, mut
 		select {
 		case <-done:
 		case <-timeout.C:
-			return ErrStopTimeout
+			for _, sm := range stops[i:] {
+				if sm == nil {
+					continue
+				}
+				select {
+				case <-sm.done:
+				default:
+					return ErrStopTimeout
+				}
+			}
+			return nil // all stopped, but stopped might not have run yet
 		case <-ctx.Done():
 			return ctx.Err()
 		}

@@ -30,6 +30,9 @@ See [Monitors / Loading / Reloading]({{< ref "/monitors/loading#reloading" >}}).
 Reloading only affects new and removed monitors.
 Monitors that did not change are not affected, even on error.
 
+A 200 status code means the monitors were reloaded.
+Removed or changed monitors that haven't stopped within [`config.monitor-loader.stop-timeout`]({{< ref "/config/config-file#stop-timeout" >}}) keep stopping in the background, and a new monitor with the same ID starts when the old one has stopped.
+
 ### Response
 
 None on success (200 status code).
@@ -64,6 +67,8 @@ Error message on 4xx or 5xx status code.
 ### Status Codes
 
 <strong>202</strong>: A monitor with the same ID is still stopping; the monitor starts when it has stopped. Starting it again while it waits also returns 202.
+
+<strong>404</strong>: Monitor not loaded
 
 <strong>409</strong>: Error starting monitor, monitor already running, or the `StartMonitor` plugin declined to start it
 

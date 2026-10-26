@@ -675,9 +675,13 @@ func (m *Monitor) stop(lock bool, caller string) {
 func (m *Monitor) stopRun(runChan chan struct{}, caller string) {
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
+	// Return without logging if the run is already stopped. m.stop would
+	// return too, but it logs first. Subsystems call stopRun after wg.Done, so
+	// stopRun can run after Stop has returned (in tests, after the test ended
+	// and the next one set blip.Debugging).
 	select {
 	case <-runChan:
-		return // already stopped, usually by Stop, which might have returned
+		return
 	default:
 	}
 	if m.runChan != runChan {

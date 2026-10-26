@@ -141,10 +141,12 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 
 		pch.CheckState()
 
-		if pch.curr.state != blip.STATE_OFFLINE {
-			time.Sleep(1 * time.Second)
-		} else {
-			time.Sleep(pch.retry.NextBackOff())
+		wait := 1 * time.Second
+		if pch.curr.state == blip.STATE_OFFLINE {
+			wait = pch.retry.NextBackOff()
+		}
+		if !sleep(stopChan, wait) {
+			return nil // stopped
 		}
 	}
 }

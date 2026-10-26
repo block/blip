@@ -105,19 +105,15 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 
 		// Error --
 		blip.Debug("%s: first heartbeat failed: %s", w.monitorId, err)
+		wait := InitErrorWait
 		if sqlutil.ReadOnly(err) {
-			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: MySQL is read-only, sleeping %s", ReadOnlyWait)
-			time.Sleep(ReadOnlyWait)
+			wait = ReadOnlyWait
+			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: MySQL is read-only, sleeping %s", wait)
 		} else {
-			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: error: %s (sleeping %s)", err, InitErrorWait)
-			time.Sleep(InitErrorWait)
+			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: error: %s (sleeping %s)", err, wait)
 		}
-
-		// Was Stop called?
-		select {
-		case <-stopChan: // yes, return immediately
-			return nil
-		default: // no
+		if !sleep(stopChan, wait) {
+			return nil // stopped
 		}
 	}
 
@@ -131,7 +127,9 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 	ping = fmt.Sprintf("UPDATE %s SET ts=NOW(3) WHERE src_id=?", w.table)
 	blip.Debug("%s: heartbeat: %s", w.monitorId, ping)
 	for {
-		time.Sleep(w.freq)
+		if !sleep(stopChan, w.freq) {
+			return nil // stopped
+		}
 
 		status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "write")
 		ctx, cancel = context.WithTimeout(context.Background(), WriteTimeout)
@@ -141,7 +139,9 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 			blip.Debug("%s: %s", w.monitorId, err.Error())
 			if sqlutil.ReadOnly(err) {
 				status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "MySQL is read-only, sleeping %s", ReadOnlyWait)
-				time.Sleep(ReadOnlyWait)
+				if !sleep(stopChan, ReadOnlyWait) {
+					return nil // stopped
+				}
 			} else {
 				status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "write error: %s", err)
 				// No special sleep on random errors; keep trying to write at freq
@@ -151,12 +151,19 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 			// doesn't overwrite status set on Exec error; "sleep" = "write OK"
 			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "sleep")
 		}
+	}
+}
 
-		// Was Stop called?
-		select {
-		case <-stopChan: // yes, return immediately
-			return nil
-		default: // no
-		}
+// sleep waits for d or until stopChan is closed. It returns false if stopChan
+// was closed. It's the same as the monitor package sleep, which heartbeat
+// can't import.
+func sleep(stopChan chan struct{}, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-stopChan:
+		return false
+	case <-t.C:
+		return true
 	}
 }

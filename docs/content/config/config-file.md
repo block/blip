@@ -194,7 +194,13 @@ A monitor that hasn't stopped by then keeps stopping in the background, and Blip
 Blip reports it again every 10 times the stop timeout until it stops.
 If the monitor is reloaded with the same ID, the new monitor doesn't start until the old one has stopped.
 
-A healthy monitor usually stops in about 1 second, but a slow collection or a heartbeat on a read-only server can take longer than the default stop timeout.
+A stop doesn't wait for the next collection, plan change check, or heartbeat:
+
+* The level collector stops right away. It cancels a collection in progress and drops its metrics; a canceled collection isn't counted as an engine max runtime timeout.
+* The plan changer and the heartbeat writer stop right away while they wait, including while they wait to retry when MySQL is offline or read-only.
+
+A healthy monitor usually stops in milliseconds.
+A stop can take longer while a subsystem waits on MySQL: a collector that doesn't return when its collection is canceled, a heartbeat write (at most 5 seconds), or the plan changer's read-only check (at most 10 seconds).
 
 ---
 

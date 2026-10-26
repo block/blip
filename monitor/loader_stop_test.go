@@ -637,7 +637,22 @@ func TestLoaderStopNotReportedAfterStopped(t *testing.T) {
 	assert.ErrorIs(t, loader.Stop("late1", false), monitor.ErrStopTimeout)
 	time.Sleep(50 * time.Millisecond) // the stop timeout report waits for the mutex
 	releaseOnce.Do(func() { close(release) })
-	time.Sleep(50 * time.Millisecond) // the monitor stops
+	// Wait until the monitor has stopped while still holding the mutex. With
+	// lock=false, Stop of a monitor that's already stopping waits only for it
+	// to stop (done is closed), up to the stop timeout, and returns nil once it
+	// has. It doesn't need the mutex, so it doesn't unblock the report.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := loader.Stop("late1", false)
+		if err == nil {
+			break
+		}
+		require.ErrorIs(t, err, monitor.ErrStopTimeout)
+		if time.Now().After(deadline) {
+			loader.Unlock()
+			t.Fatal("timeout waiting for the monitor to stop")
+		}
+	}
 	loader.Unlock()
 
 	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "late1") == 1 },

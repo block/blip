@@ -53,15 +53,16 @@ type loadedMonitor struct {
 }
 
 // stoppingMonitor is a monitor that the Loader is stopping in the background,
-// outside the Loader mutex. Only Monitor.Stop runs without the mutex; every
-// field except done is guarded by the Loader mutex.
+// outside the Loader mutex, in runStop. The Loader mutex guards the
+// Loader.stopping map that holds it, but not its fields: monitor and begin are
+// set before the stop begins and never change, and done and finished are
+// channels that runStop closes and waiters read without the mutex. Whether the
+// stop timed out is local to runStop.
 type stoppingMonitor struct {
 	monitor  *Monitor
 	begin    time.Time
 	done     chan struct{} // closed when the monitor has stopped
-	reported chan struct{} // closed when the stop timeout reporter returns
 	finished chan struct{} // closed when stopped has run: status removed, pending start started
-	stuck    bool          // true once the stop timeout has been reported
 }
 
 // stopReportFactor sets how often a monitor that is stuck stopping is reported
@@ -822,66 +823,68 @@ func (ml *Loader) stop(m *loadedMonitor) *stoppingMonitor {
 		monitor:  m.monitor,
 		begin:    time.Now(),
 		done:     make(chan struct{}),
-		reported: make(chan struct{}),
 		finished: make(chan struct{}),
 	}
 	ml.stopping[monitorId] = sm
-	go ml.reportStuck(monitorId, sm)
-	go func() {
-		stopped := sm.monitor.halt()
-		close(sm.done)
-
-		// Send the stopped event after every stop timeout event. Event receivers
-		// run synchronously, so don't send while holding the mutex.
-		<-sm.reported
-		if stopped {
-			d := time.Since(sm.begin)
-			blip.Debug("%s stopped in %s", monitorId, d)
-			if sm.stuck { // safe to read: written only by reportStuck
-				sm.monitor.event.Sendf(event.MONITOR_STOPPED, "stopped in %s, after the stop timeout (%s)", d, ml.stopTimeout)
-			} else {
-				sm.monitor.event.Sendf(event.MONITOR_STOPPED, "stopped in %s", d)
-			}
-		}
-		ml.stopped(monitorId, sm)
-	}()
+	go ml.runStop(monitorId, sm)
 	return sm
 }
 
-// reportStuck reports a monitor that hasn't stopped within the stop timeout,
-// then again every stopReportFactor x stop timeout until it stops. The monitor
-// keeps stopping in the background. reportStuck closes sm.reported when it
-// returns, after the monitor has stopped.
-func (ml *Loader) reportStuck(monitorId string, sm *stoppingMonitor) {
-	defer close(sm.reported)
+// runStop stops a monitor in the background. It reports the monitor if it
+// hasn't stopped within the stop timeout, then again every stopReportFactor x
+// stop timeout until it stops. Then it sends the stopped event and calls
+// stopped. Because this one goroutine sends every stop event, the stopped
+// event always comes after the stop timeout events.
+func (ml *Loader) runStop(monitorId string, sm *stoppingMonitor) {
+	var wasRunning bool // read only after done is closed
+	go func() {
+		wasRunning = sm.monitor.halt()
+		close(sm.done)
+	}()
+
+	stuck := false
 	wait := ml.stopTimeout
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	d := time.Duration(0)
+WAIT:
 	for {
 		select {
 		case <-sm.done:
-			return
+			break WAIT
 		case <-timer.C:
 		}
 		d += wait
-		ml.stopTimedOut(monitorId, sm, d)
+		if ml.stopTimedOut(monitorId, sm, d) {
+			stuck = true
+		}
 		wait = stopReportFactor * ml.stopTimeout
 		timer.Reset(wait)
 	}
+
+	// Event receivers run synchronously, so don't send while holding the mutex
+	if wasRunning {
+		d := time.Since(sm.begin)
+		blip.Debug("%s stopped in %s", monitorId, d)
+		if stuck {
+			sm.monitor.event.Sendf(event.MONITOR_STOPPED, "stopped in %s, after the stop timeout (%s)", d, ml.stopTimeout)
+		} else {
+			sm.monitor.event.Sendf(event.MONITOR_STOPPED, "stopped in %s", d)
+		}
+	}
+	ml.stopped(monitorId, sm, stuck)
 }
 
-// stopTimedOut reports a monitor that hasn't stopped after d. It's called only
-// by reportStuck.
-func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor, d time.Duration) {
-	ml.Lock()
+// stopTimedOut reports a monitor that hasn't stopped after d, and returns true
+// if it reported it. It returns false if the monitor stopped as the timer
+// fired. It's called only by runStop.
+func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor, d time.Duration) bool {
 	select {
 	case <-sm.done:
-		ml.Unlock()
-		return // stopped
+		return false // stopped
 	default:
 	}
-	sm.stuck = true
+	ml.Lock()
 	status.Monitor(monitorId, "error:stop", "not stopped after %s; stop began at %s", d, blip.FormatTime(sm.begin))
 	msg := fmt.Sprintf("not stopped after %s; still stopping in the background", d)
 	if m, ok := ml.repo[monitorId]; ok && m.startPending {
@@ -891,12 +894,14 @@ func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor, d time.Dur
 
 	blip.Debug("%s: %s", monitorId, msg)
 	event.MonitorReceiver{MonitorId: monitorId}.Error(event.MONITOR_STOP_TIMEOUT, msg)
+	return true
 }
 
-// stopped is called when a monitor has stopped, after its events are sent.
-// It removes the stop and starts the monitor with the same ID if it's waiting
-// to start (startPending).
-func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor) {
+// stopped is called by runStop when a monitor has stopped, after its events are
+// sent. It removes the stop, and the error:stop status if the stop timed out
+// (stuck), and starts the monitor with the same ID if it's waiting to start
+// (startPending).
+func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor, stuck bool) {
 	ml.Lock()
 	defer ml.Unlock()
 	defer close(sm.finished)
@@ -904,7 +909,7 @@ func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor) {
 		return // shouldn't happen
 	}
 	delete(ml.stopping, monitorId)
-	if sm.stuck {
+	if stuck {
 		status.RemoveComponent(monitorId, "error:stop")
 	}
 
@@ -930,8 +935,8 @@ func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor) {
 // so the stopped monitor's status is removed (if it was unloaded) and a pending
 // start of the same monitor ID has started. If mutexHeld is true, the caller
 // holds the Loader mutex, and waitStopped waits only until the monitor has
-// stopped (sm.done), which is closed before the stop goroutine takes the mutex
-// (in stopTimedOut or stopped).
+// stopped (sm.done), which is closed before runStop takes the mutex (in
+// stopTimedOut or stopped).
 func (ml *Loader) waitStopped(ctx context.Context, stops []*stoppingMonitor, mutexHeld bool) error {
 	if len(stops) == 0 {
 		return nil

@@ -625,16 +625,22 @@ func TestLoaderStopEvents(t *testing.T) {
 		time.Second, 5*time.Millisecond)
 	assert.Equal(t, []string{event.MONITOR_STOPPED}, st.stopEvents("events1"))
 
-	// events2 is stuck: reported at 50ms and 550ms, then it stops at about 700ms
+	// events2 is stuck: reported at 50ms and 550ms (and again every 500ms if
+	// a slow runner doesn't release it right away), then it stops
 	assert.ErrorIs(t, loader.Stop("events2", true), monitor.ErrStopTimeout)
-	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOP_TIMEOUT, "events2") == 2 },
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOP_TIMEOUT, "events2") >= 2 },
 		2*time.Second, 5*time.Millisecond)
 	assert.Contains(t, stopStatus("events2"), "not stopped after 550ms")
-	time.Sleep(150 * time.Millisecond)
 	releaseOnce.Do(func() { close(release) })
-	require.Eventually(t, func() bool { return len(st.stopEvents("events2")) == 3 },
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "events2") == 1 },
 		time.Second, 5*time.Millisecond)
-	assert.Equal(t, []string{event.MONITOR_STOP_TIMEOUT, event.MONITOR_STOP_TIMEOUT, event.MONITOR_STOPPED}, st.stopEvents("events2"))
+	got := st.stopEvents("events2")
+	require.GreaterOrEqual(t, len(got), 3, "stop events %v", got)
+	for _, e := range got[:len(got)-1] {
+		assert.Equal(t, event.MONITOR_STOP_TIMEOUT, e, "stop events %v", got)
+	}
+	assert.Equal(t, event.MONITOR_STOPPED, got[len(got)-1], "stop events %v", got)
+	assert.Contains(t, st.lastEventMsg(event.MONITOR_STOPPED, "events2"), "after the stop timeout")
 	assert.Empty(t, stopStatus("events2"))
 
 	// No MONITOR_STOPPED event without a monitor ID

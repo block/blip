@@ -67,6 +67,8 @@ type planChanger struct {
 	event   event.MonitorReceiver
 	retry   *backoff.ExponentialBackOff
 	lerr    error
+
+	readOnlyTimeout time.Duration // how long to wait for readOnlyQuery
 }
 
 func NewPlanChanger(args PlanChangerArgs) *planChanger {
@@ -110,6 +112,8 @@ func NewPlanChanger(args PlanChangerArgs) *planChanger {
 		first:   true,
 		event:   event.MonitorReceiver{MonitorId: args.MonitorId},
 		retry:   retry,
+
+		readOnlyTimeout: 10 * time.Second,
 	}
 }
 
@@ -133,16 +137,14 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "running")
 
-	// The state check uses a context that's canceled on stop, so a stop
-	// doesn't wait for the read-only query to a hung or unreachable MySQL
+	// ctx is canceled on stop, so a stop doesn't wait for the read-only query
+	// to a hung or unreachable MySQL, or for the sleep between checks
 	ctx, cancel := stopchan.Context(stopChan)
 	defer cancel()
 
 	for {
-		select {
-		case <-stopChan:
-			return nil
-		default:
+		if ctx.Err() != nil {
+			return nil // stopped
 		}
 
 		pch.CheckState(ctx)
@@ -151,7 +153,7 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 		if pch.curr.state == blip.STATE_OFFLINE {
 			wait = pch.retry.NextBackOff()
 		}
-		if !stopchan.Sleep(stopChan, wait) {
+		if !stopchan.Sleep(ctx.Done(), wait) {
 			return nil // stopped
 		}
 	}
@@ -249,9 +251,6 @@ func (pch *planChanger) lcoChangePlan(state, planName string) error {
 
 const readOnlyQuery = "SELECT @@read_only, @@super_read_only"
 
-// readOnlyTimeout is how long the PCH waits for readOnlyQuery
-var readOnlyTimeout = 10 * time.Second
-
 // state queries MySQL to ascertain the HA and read-only state. If ctx is
 // canceled, it returns STATE_NONE, which the caller must ignore.
 func (pch *planChanger) state(ctx context.Context) string {
@@ -264,7 +263,7 @@ func (pch *planChanger) state(ctx context.Context) string {
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "checking MySQL read-only")
 
 	var ro, sro int
-	qctx, cancel := context.WithTimeout(ctx, readOnlyTimeout)
+	qctx, cancel := context.WithTimeout(ctx, pch.readOnlyTimeout)
 	err := pch.db.QueryRowContext(qctx, readOnlyQuery).Scan(&ro, &sro)
 	cancel()
 	if ctx.Err() != nil {

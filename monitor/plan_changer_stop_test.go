@@ -93,7 +93,7 @@ func TestPlanChangerStopsDuringOfflineWait(t *testing.T) {
 }
 
 func TestPlanChangerStopsDuringStateQuery(t *testing.T) {
-	// The read-only query can wait up to readOnlyTimeout on a hung or
+	// The read-only query can wait up to the read-only timeout on a hung or
 	// partitioned MySQL. Stopping the PCH cancels it instead of waiting.
 	const monitorId = "pch-stop-query"
 	defer status.RemoveMonitor(monitorId)
@@ -104,10 +104,8 @@ func TestPlanChangerStopsDuringStateQuery(t *testing.T) {
 	defer db.Close()
 
 	const timeout = time.Minute
-	defer func(d time.Duration) { readOnlyTimeout = d }(readOnlyTimeout)
-	readOnlyTimeout = timeout
-
 	pch := NewPlanChanger(PlanChangerArgs{MonitorId: monitorId, DB: db, HA: ha.Disabled})
+	pch.readOnlyTimeout = timeout
 	stopChan := make(chan struct{})
 	doneChan := make(chan struct{})
 	go pch.Run(stopChan, doneChan)

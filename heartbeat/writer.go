@@ -80,8 +80,8 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 		cancel context.CancelFunc
 	)
 
-	// Writes use a context that's canceled on stop, so a stop doesn't wait
-	// for a write to a hung or unreachable MySQL (up to WriteTimeout)
+	// stopCtx is canceled on stop, so a stop doesn't wait for a write to a
+	// hung or unreachable MySQL (up to WriteTimeout), or for a sleep
 	stopCtx, stopCancel := stopchan.Context(stopChan)
 	defer stopCancel()
 
@@ -121,7 +121,7 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 		} else {
 			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: error: %s (sleeping %s)", err, wait)
 		}
-		if !stopchan.Sleep(stopChan, wait) {
+		if !stopchan.Sleep(stopCtx.Done(), wait) {
 			return nil // stopped
 		}
 	}
@@ -136,7 +136,7 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 	ping = fmt.Sprintf("UPDATE %s SET ts=NOW(3) WHERE src_id=?", w.table)
 	blip.Debug("%s: heartbeat: %s", w.monitorId, ping)
 	for {
-		if !stopchan.Sleep(stopChan, w.freq) {
+		if !stopchan.Sleep(stopCtx.Done(), w.freq) {
 			return nil // stopped
 		}
 
@@ -151,7 +151,7 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 			blip.Debug("%s: %s", w.monitorId, err.Error())
 			if sqlutil.ReadOnly(err) {
 				status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "MySQL is read-only, sleeping %s", ReadOnlyWait)
-				if !stopchan.Sleep(stopChan, ReadOnlyWait) {
+				if !stopchan.Sleep(stopCtx.Done(), ReadOnlyWait) {
 					return nil // stopped
 				}
 			} else {

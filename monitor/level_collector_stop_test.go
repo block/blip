@@ -4,6 +4,7 @@ package monitor
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,5 +99,9 @@ func TestLevelCollectorStopCancelsCollection(t *testing.T) {
 	}
 	if v := counters(t, monitorId)[status.ENGINE_EMR_TIMEOUTS]; v != 0 {
 		t.Errorf("%s = %d, expected 0", status.ENGINE_EMR_TIMEOUTS, v)
+	}
+	// The canceled collection's metrics are dropped, not reported collected
+	if s := status.ReportMonitors(monitorId)[monitorId][status.LEVEL_COLLECT]; !strings.HasSuffix(s, ": stopped; metrics dropped") {
+		t.Errorf("%s status = %q, expected stopped; metrics dropped", status.LEVEL_COLLECT, s)
 	}
 }

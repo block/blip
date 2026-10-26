@@ -338,11 +338,16 @@ func (c *lco) stopChangePlan() {
 // metrics are dropped.
 func (c *lco) collect(ctx context.Context, interval uint, levelName string, startTime time.Time) {
 	status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s: collecting", c.plan.Name, levelName)
+	dropped := false // stopped during collection
 	defer func() {
 		if err := recover(); err != nil { // catch panic in engine and TransformMetrics
 			b := make([]byte, 4096)
 			n := runtime.Stack(b, false)
 			c.event.Errorf(event.LCO_COLLECT_PANIC, "PANIC: %s: %s\n%s", c.monitorId, err, string(b[0:n]))
+		}
+		if dropped {
+			status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s/%d: stopped; metrics dropped", c.plan.Name, levelName, interval)
+			return
 		}
 		status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s/%d: collected in %s", c.plan.Name, levelName, interval, time.Now().Sub(startTime))
 	}()
@@ -358,6 +363,7 @@ func (c *lco) collect(ctx context.Context, interval uint, levelName string, star
 	blip.Debug("%s: level %s: done in %s", c.monitorId, levelName, metrics[0].End.Sub(metrics[0].Begin))
 	if ctx.Err() != nil {
 		blip.Debug("%s: level %s: stopped, dropping metrics", c.monitorId, levelName)
+		dropped = true
 		return
 	}
 
@@ -471,7 +477,7 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 		errMsg := fmt.Sprintf("%s: error loading new plan %s: %s (retrying)", change, newPlanName, err)
 		status.Monitor(c.monitorId, status.LEVEL_CHANGE_PLAN, "%s", errMsg)
 		c.event.Sendf(event.CHANGE_PLAN_ERROR, "%s", errMsg)
-		if !waitForChangePlanRetry(ctx, 2*time.Second) {
+		if !stopchan.Sleep(ctx.Done(), 2*time.Second) {
 			blip.Debug("changePlan canceled while loading plan")
 			return
 		}
@@ -549,7 +555,7 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 			return // changePlan goroutine has been cancelled
 		}
 		status.Monitor(c.monitorId, status.LEVEL_CHANGE_PLAN, "%s: error preparing new plan %s: %s (retrying)", change, newPlan.Name, err)
-		if !waitForChangePlanRetry(ctx, retry.NextBackOff()) {
+		if !stopchan.Sleep(ctx.Done(), retry.NextBackOff()) {
 			blip.Debug("changePlan canceled while waiting to retry plan preparation")
 			return
 		}
@@ -557,18 +563,6 @@ func (c *lco) changePlan(ctx context.Context, doneChan chan struct{}, newState, 
 
 	status.RemoveComponent(c.monitorId, status.LEVEL_CHANGE_PLAN)
 	c.event.Sendf(event.CHANGE_PLAN_SUCCESS, "%s", change)
-}
-
-func waitForChangePlanRetry(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 // Pause pauses metrics collection until ChangePlan is called. Run still runs,

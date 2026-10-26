@@ -197,12 +197,12 @@ If the monitor is reloaded with the same ID, the new monitor doesn't start until
 A stop doesn't wait for the next collection, plan change check, or heartbeat:
 
 * The level collector stops right away. It cancels a collection in progress and drops its metrics; a canceled collection isn't counted as an engine max runtime timeout.
-* The plan changer and the heartbeat writer stop right away while they wait, including while they wait to retry when MySQL is offline or read-only. A stop cancels the plan changer's read-only check and a heartbeat write in progress, so it doesn't wait for a hung or unreachable MySQL.
+* The plan changer and the heartbeat writer stop right away while they wait. The plan changer waits between checks, and backs off up to 60 seconds while MySQL is offline. The heartbeat writer waits between heartbeats, before it retries a first heartbeat that failed, and while MySQL is read-only. A stop cancels the plan changer's read-only check and a heartbeat write in progress, so it doesn't wait for a hung or unreachable MySQL.
 
 A running monitor usually stops in milliseconds, even when MySQL is hung or unreachable.
 A stop can take longer in two cases:
 
-* A collector doesn't return when its collection is canceled.
+* A collector, or its cleanup function, doesn't return promptly when its collection is canceled. A stop waits for every collector to return, then runs their cleanup functions.
 * The monitor is starting. A stop waits for it to connect to MySQL, which can take up to [`timeout-connect`](#timeout-connect) (default 10 seconds) when MySQL is unreachable, and to load its plan, which can wait on a hung MySQL if the plan is in a table.
 
 ---

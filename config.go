@@ -405,7 +405,7 @@ func (c *ConfigMonitorLoader) InterpolateEnvVars() {
 
 func (c *ConfigMonitorLoader) ApplyDefaults(b Config) {
 	if c.StopTimeout == "" {
-		c.StopTimeout = DEFAULT_MONITOR_LOADER_STOP_TIMEOUT
+		c.StopTimeout = b.MonitorLoader.StopTimeout
 	}
 }
 

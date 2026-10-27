@@ -215,14 +215,10 @@ func (api *API) monitorsStop(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("stop %s", monitorId)
 	// Stop through the loader, not Monitor.Stop, so the loader knows the
 	// monitor is stopped and the wait for it to stop is bounded. Use the
-	// monitor's ID, not monitorId, which has CR and LF removed.
+	// monitor's ID, not monitorId, which has CR and LF removed. The only
+	// error is ErrStopTimeout.
 	if err := api.monitorLoader.Stop(mon.MonitorId(), true); err != nil {
-		if err == monitor.ErrStopTimeout {
-			http.Error(w, fmt.Sprintf("monitor %s is still stopping", html.EscapeString(monitorId)), http.StatusAccepted)
-			return
-		}
-		errMsg := html.EscapeString(fmt.Sprintf("Error stopping monitor %s: %s", html.EscapeString(monitorId), err))
-		http.Error(w, errMsg, http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("monitor %s is still stopping", html.EscapeString(monitorId)), http.StatusAccepted)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

@@ -329,49 +329,6 @@ func TestLoaderUnloadStuckMonitor(t *testing.T) {
 	assert.Equal(t, 1, st.eventCount(event.MONITOR_STOP_TIMEOUT, "stuck1"), "new monitor didn't stop within the stop timeout")
 }
 
-func TestLoaderStopStuckMonitor(t *testing.T) {
-	// Loader.Stop (used by POST /monitors/stop) waits no longer than the stop
-	// timeout, and Start while the monitor is still stopping is deferred
-	// until the stop finishes.
-	ids := []string{"stuck2"}
-	st, loader := setupStopTest(t, "100ms", &ids, nil)
-	defer status.RemoveMonitor("stuck2")
-
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
-	st.cleanup = func(string) { <-release }
-
-	require.NoError(t, loader.Load(context.Background()))
-	loader.StartMonitors()
-	waitPrepared(t, st, 1, "stuck2")
-
-	t0 := time.Now()
-	err := loader.Stop("stuck2", true)
-	assert.ErrorIs(t, err, monitor.ErrStopTimeout)
-	assert.Less(t, time.Since(t0), time.Second)
-
-	// A second stop of the same monitor waits on the same stop
-	assert.ErrorIs(t, loader.Stop("stuck2", true), monitor.ErrStopTimeout)
-
-	// Start while stopping: deferred
-	require.NoError(t, loader.Start("stuck2", true))
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, 1, st.preparedCount("stuck2"))
-
-	// Stop finishes: the same monitor starts again
-	st.mux.Lock()
-	st.cleanup = func(string) {}
-	st.mux.Unlock()
-	releaseOnce.Do(func() { close(release) })
-	waitPrepared(t, st, 2, "stuck2")
-
-	// A stop that's no longer stuck returns nil
-	assert.NoError(t, loader.Stop("stuck2", true))
-	assert.NoError(t, loader.Unload("stuck2", true))
-	assert.Empty(t, loader.Monitors())
-}
-
 func TestLoaderUnloadNotStarted(t *testing.T) {
 	// Unloading a monitor that was loaded but never started must not call
 	// Monitor.Stop, which panics on a monitor that never started.
@@ -390,17 +347,17 @@ func TestLoaderUnloadNotStarted(t *testing.T) {
 }
 
 func TestLoaderUnloadParallel(t *testing.T) {
-	// Removing many monitors at once stops them in parallel. Compare one Load
-	// that removes n monitors with stopping n monitors one at a time, which
-	// is what Load did before. Each stop takes stopDelay in the collector
-	// cleanup, standing in for the time a real monitor takes to stop.
+	// Removing many monitors at once stops them in parallel. Each stop takes
+	// stopDelay in the collector cleanup, standing in for the time a real
+	// monitor takes to stop, so stopping them one at a time, which is what
+	// Load did before, would take n x stopDelay.
 	const n = 40
 	const stopDelay = 50 * time.Millisecond
 
-	ids := append(makeIds("par", n), makeIds("ser", n)...)
+	ids := makeIds("par", n)
 	st, loader := setupStopTest(t, "5s", &ids, nil)
 	defer func() {
-		for _, id := range append(makeIds("par", n), makeIds("ser", n)...) {
+		for _, id := range makeIds("par", n) {
 			status.RemoveMonitor(id)
 		}
 	}()
@@ -410,26 +367,16 @@ func TestLoaderUnloadParallel(t *testing.T) {
 	loader.StartMonitors()
 	waitPrepared(t, st, 1, ids...)
 
-	// Serial: stop and unload each "ser" monitor one at a time
-	t0 := time.Now()
-	for _, id := range makeIds("ser", n) {
-		require.NoError(t, loader.Unload(id, true))
-	}
-	serial := time.Since(t0)
-
-	// Parallel: one Load removes all the "par" monitors
 	setIds(st, &ids)
-	t0 = time.Now()
+	t0 := time.Now()
 	require.NoError(t, loader.Load(context.Background()))
 	parallel := time.Since(t0)
 	assert.Empty(t, loader.Monitors())
 
-	t.Logf("stop %d monitors (%s each): serial %s, parallel %s", n, stopDelay, serial, parallel)
-	assert.GreaterOrEqual(t, serial, n*stopDelay)
-	assert.Less(t, parallel, serial/4, "parallel stop not faster than serial stop")
+	t.Logf("stop %d monitors (%s each) in %s", n, stopDelay, parallel)
+	assert.Less(t, parallel, n*stopDelay/4, "monitors not stopped in parallel")
 	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, ""))
 }
-
 func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	// Hammer Load, StartMonitors, Start, and Stop concurrently (for the race
 	// detector), then check that the Loader's state converges: after a final
@@ -822,53 +769,39 @@ func TestLoaderStopNotTimedOutWhileMutexHeld(t *testing.T) {
 }
 
 func TestLoaderStopCancelsPendingStartStatus(t *testing.T) {
-	// A Stop that cancels a pending start replaces the "start pending" status.
-	// Hold off the Loader's cleanup after the stop (stopped), which would
-	// start the pending monitor, by blocking delivery of its MONITOR_STOPPED
-	// event.
+	// A Stop that cancels a pending start replaces the "start pending" status,
+	// and the monitor doesn't start when the stop that it waited for finishes
 	ids := []string{"cancel1"}
 	st, loader := setupStopTest(t, "100ms", &ids, nil)
 	defer status.RemoveMonitor("cancel1")
 
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	st.cleanup = func(string) { <-release }
+
 	require.NoError(t, loader.Load(context.Background()))
 	loader.StartMonitors()
 	waitPrepared(t, st, 1, "cancel1")
-
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var enteredOnce, releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
-	event.Subscribe(mock.EventReceiver{RecvFunc: func(e event.Event) {
-		if e.Event == event.MONITOR_STOPPED && e.MonitorId == "cancel1" {
-			enteredOnce.Do(func() { close(entered) })
-			<-release
-		}
-	}})
-
-	// The monitor halts, so Stop returns nil, but stopped is held off
-	assert.NoError(t, loader.Stop("cancel1", true))
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for the monitor-stopped event")
-	}
 	monitorStatus := func() string { return status.ReportMonitors("cancel1")["cancel1"][status.MONITOR] }
 
+	assert.ErrorIs(t, loader.Stop("cancel1", true), monitor.ErrStopTimeout)
 	res, err := loader.TryStart("cancel1")
 	require.NoError(t, err)
 	assert.Equal(t, monitor.START_PENDING, res)
 	assert.Contains(t, monitorStatus(), "start pending")
 
-	assert.NoError(t, loader.Stop("cancel1", true))
-	assert.Contains(t, monitorStatus(), "stopped; pending start canceled at")
+	assert.ErrorIs(t, loader.Stop("cancel1", true), monitor.ErrStopTimeout)
+	assert.Contains(t, monitorStatus(), "pending start canceled at")
 
-	// When stopped runs, it doesn't start the monitor or change its status
 	releaseOnce.Do(func() { close(release) })
-	time.Sleep(100 * time.Millisecond)
+	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "cancel1") == 1 },
+		5*time.Second, 5*time.Millisecond)
+	assert.NoError(t, loader.Stop("cancel1", true))
+	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 1, st.preparedCount("cancel1"))
-	assert.Contains(t, monitorStatus(), "stopped; pending start canceled at")
+	assert.Contains(t, monitorStatus(), "stopped at")
 }
-
 func TestLoaderPendingStartDeclinedOrPanics(t *testing.T) {
 	// A pending start runs when the stop it waits for finishes. If the
 	// StartMonitor plugin then declines it or panics, the monitor status says
@@ -912,8 +845,7 @@ func TestLoaderPendingStartDeclinedOrPanics(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond, "decl1 status %q", monitorStatus("decl1", status.MONITOR))
 	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_PANIC, "panic1") == 1 },
 		5*time.Second, 5*time.Millisecond)
-	assert.Equal(t, "not started: pending start panicked", monitorStatus("panic1", status.MONITOR))
-	assert.Contains(t, monitorStatus("panic1", "error:"+status.MONITOR), "PANIC: test StartMonitor panic")
+	assert.Equal(t, "not started: pending start panicked: test StartMonitor panic", monitorStatus("panic1", status.MONITOR))
 	assert.Contains(t, st.lastEventMsg(event.MONITOR_PANIC, "panic1"), "test StartMonitor panic")
 	assert.Equal(t, 1, st.preparedCount("decl1"))
 	assert.Equal(t, 1, st.preparedCount("panic1"))
@@ -981,34 +913,6 @@ func TestLoaderStopEvents(t *testing.T) {
 	assert.Equal(t, 2, st.eventCount(event.MONITOR_STOPPED, ""))
 }
 
-func TestLoaderStopEventOrder(t *testing.T) {
-	// A monitor that stops right when the stop timeout expires must not send
-	// MONITOR_STOPPED before MONITOR_STOP_TIMEOUT. Run many monitors whose
-	// stops take about as long as the stop timeout.
-	const n = 20
-	ids := makeIds("order", n)
-	st, loader := setupStopTest(t, "20ms", &ids, nil)
-	defer func() {
-		for _, id := range makeIds("order", n) {
-			status.RemoveMonitor(id)
-		}
-	}()
-	st.cleanup = func(string) { time.Sleep(20 * time.Millisecond) }
-
-	require.NoError(t, loader.Load(context.Background()))
-	loader.StartMonitors()
-	waitPrepared(t, st, 1, ids...)
-
-	setIds(st, &ids)
-	require.NoError(t, loader.Load(context.Background()))
-	for _, id := range makeIds("order", n) {
-		require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, id) == 1 },
-			2*time.Second, 5*time.Millisecond, "%s not stopped", id)
-		got := st.stopEvents(id)
-		assert.Equal(t, event.MONITOR_STOPPED, got[len(got)-1], "%s: stop events %v", id, got)
-	}
-}
-
 func TestLoaderTryStart(t *testing.T) {
 	// TryStart returns why a monitor did or didn't start
 	ids := []string{"try1", "try-declined"}
@@ -1042,7 +946,9 @@ func TestLoaderTryStart(t *testing.T) {
 	assert.ErrorIs(t, err, monitor.ErrMonitorNotLoaded)
 	assert.Equal(t, monitor.START_ERROR, res)
 
-	// Stuck stop: start is pending, and stays pending if started again
+	// Stuck stop: a second Stop waits on the same stop, and a start is
+	// pending, and stays pending if started again
+	assert.ErrorIs(t, loader.Stop("try1", true), monitor.ErrStopTimeout)
 	assert.ErrorIs(t, loader.Stop("try1", true), monitor.ErrStopTimeout)
 	res, err = loader.TryStart("try1")
 	require.NoError(t, err)

@@ -169,8 +169,11 @@ func TestAPIMonitorsStart(t *testing.T) {
 	}})
 	defer event.RemoveSubscribers()
 
-	// The loader sends the stopped event after the stop returns. Wait for it,
-	// else it races with the next test, which sets the global event receiver.
+	// A stop that returns 200 has already sent the stopped event, because
+	// Loader.Stop waits until the stop has finished, so for those waitStopped
+	// is only a check. A stop that returns 202 sends it later, in the
+	// background: wait for it, else it races with the next test, which sets
+	// the global event receiver.
 	waitStopped := func(monitorId string, n int) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
@@ -227,8 +230,9 @@ func TestAPIMonitorsStart(t *testing.T) {
 	}
 
 	// Start api-pending and stop it while it's stuck in startup (making its
-	// DB), so the stop times out after the default stop timeout (3s). Starting it while it's still stopping is
-	// pending, and starting it again is still pending, not already running.
+	// DB), so the stop times out after the default stop timeout (3s). Starting
+	// it while it's still stopping is pending, and starting it again is still
+	// pending, not already running.
 	if got := post("/monitors/start?id=api-pending"); got != http.StatusOK {
 		t.Errorf("start api-pending: got %d, expected 200", got)
 	}

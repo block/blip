@@ -770,9 +770,11 @@ func TestLoaderStopNotTimedOutWhileMutexHeld(t *testing.T) {
 	// A Stop that's waiting for the monitor to stop returns nil if the monitor
 	// has stopped by the stop timeout, even if the Loader's cleanup after the
 	// stop is still waiting for the mutex (here, held by the test; in Blip,
-	// for example, by StartMonitors staggering many starts).
+	// for example, by StartMonitors staggering many starts). The test holds the
+	// mutex until Stop returns, so Stop can only return at the stop timeout,
+	// and the stop timeout is long so that the monitor halts well before it.
 	ids := []string{"held1"}
-	st, loader := setupStopTest(t, "200ms", &ids, nil)
+	st, loader := setupStopTest(t, "2s", &ids, nil)
 	defer status.RemoveMonitor("held1")
 
 	cleanupStarted := make(chan struct{})
@@ -797,20 +799,25 @@ func TestLoaderStopNotTimedOutWhileMutexHeld(t *testing.T) {
 		t.Fatal("timeout waiting for the stop to begin")
 	}
 
-	// Hold the mutex past the stop timeout, and let the monitor stop meanwhile
+	// Hold the mutex, then let the monitor halt. The stopped event is sent
+	// without the mutex, so the monitor has halted once it's sent, but the
+	// Loader's cleanup waits for the mutex. Keep holding it until Stop returns
+	// at the stop timeout.
 	loader.Lock()
 	releaseOnce.Do(func() { close(release) })
-	time.Sleep(400 * time.Millisecond)
-	loader.Unlock()
-
+	halted := assert.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "held1") == 1 },
+		5*time.Second, 5*time.Millisecond, "monitor didn't halt")
+	var err error
+	returned := false
 	select {
-	case err := <-stopErr:
-		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Stop didn't return")
+	case err = <-stopErr:
+		returned = true
+	case <-time.After(10 * time.Second):
 	}
-	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "held1") == 1 },
-		5*time.Second, 5*time.Millisecond)
+	loader.Unlock()
+	require.True(t, halted)
+	require.True(t, returned, "Stop didn't return")
+	assert.NoError(t, err)
 	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, "held1"))
 }
 
@@ -966,7 +973,9 @@ func TestLoaderStopEvents(t *testing.T) {
 	}
 	assert.Equal(t, event.MONITOR_STOPPED, got[len(got)-1], "stop events %v", got)
 	assert.Contains(t, st.lastEventMsg(event.MONITOR_STOPPED, "events2"), "after the stop timeout")
-	assert.Empty(t, stopStatus("events2"))
+	// The stopped event is sent before the Loader removes the error:stop status
+	assert.Eventually(t, func() bool { return stopStatus("events2") == "" },
+		time.Second, 5*time.Millisecond, "error:stop status not removed: %q", stopStatus("events2"))
 
 	// No MONITOR_STOPPED event without a monitor ID
 	assert.Equal(t, 2, st.eventCount(event.MONITOR_STOPPED, ""))

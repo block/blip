@@ -381,9 +381,10 @@ func TestLoaderUnloadParallel(t *testing.T) {
 func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	// Hammer Load, StartMonitors, Start, and Stop concurrently (for the race
 	// detector), then check that the Loader's state converges: after a final
-	// Load and StartMonitors, every loaded monitor is running (once any earlier
-	// stop of its ID finishes) and is prepared, and unloading all of them
-	// stops them without a stop timeout.
+	// Load, StartMonitors, and Start of each monitor (a monitor stopped by Stop
+	// stays stopped until Start), every loaded monitor is running (once any
+	// earlier stop of its ID finishes) and is prepared, and unloading all of
+	// them stops them without a stop timeout.
 	all := makeIds("cc", 8)
 	ids := append([]string{}, all...)
 	st, loader := setupStopTest(t, "5s", &ids, nil)
@@ -434,15 +435,16 @@ func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	loader.StartMonitors()
 	assert.ElementsMatch(t, all, monitorIds(loader.Monitors()))
 
-	// TryStart returns START_OK if StartMonitors left a monitor stopped, and
-	// START_PENDING while it waits for an earlier stop of its ID
+	// TryStart returns START_OK for a monitor that was last stopped by Stop,
+	// which StartMonitors doesn't start, and START_PENDING while it waits for
+	// an earlier stop of its ID
 	deadline := time.Now().Add(5 * time.Second)
 	for _, id := range all {
 		for {
 			res, err := loader.TryStart(id)
 			require.NoError(t, err)
 			if res != monitor.START_PENDING {
-				assert.Equal(t, monitor.START_RUNNING, res, "%s not running after StartMonitors", id)
+				assert.Contains(t, []monitor.StartResult{monitor.START_OK, monitor.START_RUNNING}, res, "%s not running after Start", id)
 				break
 			}
 			if time.Now().After(deadline) {
@@ -771,7 +773,8 @@ func TestLoaderStopNotTimedOutWhileMutexHeld(t *testing.T) {
 
 func TestLoaderStopCancelsPendingStartStatus(t *testing.T) {
 	// A Stop that cancels a pending start replaces the "start pending" status,
-	// and the monitor doesn't start when the stop that it waited for finishes
+	// and the monitor doesn't start when the stop that it waited for finishes,
+	// or when StartMonitors runs after it
 	ids := []string{"cancel1"}
 	st, loader := setupStopTest(t, "100ms", &ids, nil)
 	defer status.RemoveMonitor("cancel1")
@@ -799,6 +802,7 @@ func TestLoaderStopCancelsPendingStartStatus(t *testing.T) {
 	require.Eventually(t, func() bool { return st.eventCount(event.MONITOR_STOPPED, "cancel1") == 1 },
 		5*time.Second, 5*time.Millisecond)
 	assert.NoError(t, loader.Stop("cancel1", true))
+	loader.StartMonitors() // doesn't start it: the Stop holds it
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 1, st.preparedCount("cancel1"))
 	assert.Contains(t, monitorStatus(), "stopped at")
@@ -968,4 +972,93 @@ func TestLoaderTryStart(t *testing.T) {
 	releaseOnce.Do(func() { close(release) })
 	waitPrepared(t, st, 2, "try1")
 	assert.NoError(t, loader.Unload("try1", true))
+}
+
+func TestLoaderStopHeldAcrossReload(t *testing.T) {
+	// A monitor stopped by Stop stays stopped across Load and StartMonitors
+	// when its config doesn't change, until Start. That's true even if it
+	// wasn't running when it was stopped.
+	ids := []string{"held1", "held2"}
+	st, loader := setupStopTest(t, "1s", &ids, nil)
+	defer status.RemoveMonitor("held1")
+	defer status.RemoveMonitor("held2")
+
+	require.NoError(t, loader.Load(context.Background()))
+	require.NoError(t, loader.Stop("held2", true)) // loaded, not started
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "held1")
+	require.NoError(t, loader.Stop("held1", true))
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	time.Sleep(100 * time.Millisecond) // longer than a 10ms tick
+	assert.Equal(t, 1, st.eventCount(event.MONITOR_STARTED, "held1"))
+	assert.Equal(t, 0, st.eventCount(event.MONITOR_STARTED, "held2"))
+	assert.Equal(t, 1, st.preparedCount("held1"))
+	assert.Equal(t, 0, st.preparedCount("held2"))
+
+	for _, id := range ids {
+		res, err := loader.TryStart(id)
+		require.NoError(t, err)
+		assert.Equal(t, monitor.START_OK, res, id)
+	}
+	waitPrepared(t, st, 2, "held1")
+	waitPrepared(t, st, 1, "held2")
+
+	setIds(st, &ids)
+	require.NoError(t, loader.Load(context.Background()))
+}
+
+func TestLoaderStopHeldChangedConfigStarts(t *testing.T) {
+	// A reload that changes a monitor stopped by Stop replaces it with a new
+	// monitor, which StartMonitors starts
+	registerStopTestRetrySink.Do(func() {
+		require.NoError(t, sink.Register(stopTestRetrySink, stopTestRetrySinkFactory{}))
+	})
+	ids := []string{"heldchanged1"}
+	st, loader := setupStopTest(t, "1s", &ids, nil)
+	defer status.RemoveMonitor("heldchanged1")
+	st.sinks = map[string]map[string]string{stopTestRetrySink: {"version": "1"}}
+
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "heldchanged1")
+	require.NoError(t, loader.Stop("heldchanged1", true))
+
+	st.mux.Lock()
+	st.sinks = map[string]map[string]string{stopTestRetrySink: {"version": "2"}}
+	st.mux.Unlock()
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 2, "heldchanged1")
+	res, err := loader.TryStart("heldchanged1")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_RUNNING, res)
+
+	setIds(st, &ids)
+	require.NoError(t, loader.Load(context.Background()))
+}
+
+func TestLoaderStartClearsHeld(t *testing.T) {
+	// Start clears the hold of a monitor stopped by Stop even if the
+	// StartMonitor plugin declines it, so the next StartMonitors asks the
+	// plugin again
+	var allow atomic.Bool
+	ids := []string{"heldstart1"}
+	st, loader := setupStopTest(t, "1s", &ids, func(blip.ConfigMonitor) bool { return allow.Load() })
+	defer status.RemoveMonitor("heldstart1")
+
+	require.NoError(t, loader.Load(context.Background()))
+	require.NoError(t, loader.Stop("heldstart1", true))
+	res, err := loader.TryStart("heldstart1")
+	require.NoError(t, err)
+	assert.Equal(t, monitor.START_DECLINED, res)
+
+	allow.Store(true)
+	require.NoError(t, loader.Load(context.Background()))
+	loader.StartMonitors()
+	waitPrepared(t, st, 1, "heldstart1")
+
+	setIds(st, &ids)
+	require.NoError(t, loader.Load(context.Background()))
 }

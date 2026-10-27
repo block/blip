@@ -120,7 +120,8 @@ func (f blockingDbFactory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error)
 func TestAPIMonitorsStart(t *testing.T) {
 	// POST /monitors/start returns 200 when the monitor starts, 202 when a
 	// monitor with the same ID is still stopping, and 409 when it's already
-	// running or the StartMonitor plugin declines to start it.
+	// running or the StartMonitor plugin declines to start it. A monitor
+	// stopped by POST /monitors/stop stays stopped across a reload.
 	cfg := blip.DefaultConfig()
 	dbf := blockingDbFactory{
 		DbFactory: dbconn.NewConnFactory(nil, nil),
@@ -269,4 +270,18 @@ func TestAPIMonitorsStart(t *testing.T) {
 		t.Errorf("stop api-pending: got %d, expected 200", got)
 	}
 	waitStopped("api-pending", 2)
+
+	// A monitor stopped through the API stays stopped across a reload, which
+	// doesn't change it, until it's started: the start returns 200, not 409
+	// (already running)
+	if got := post("/monitors/reload"); got != http.StatusOK {
+		t.Errorf("reload: got %d, expected 200", got)
+	}
+	if got := post("/monitors/start?id=api-start"); got != http.StatusOK {
+		t.Errorf("start after stop and reload: got %d, expected 200", got)
+	}
+	if got := post("/monitors/stop?id=api-start"); got != http.StatusOK {
+		t.Errorf("stop api-start: got %d, expected 200", got)
+	}
+	waitStopped("api-start", 2)
 }

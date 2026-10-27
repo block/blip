@@ -39,7 +39,8 @@ var (
 
 // loadedMonitor represents one validated and loaded Monitor created by
 // a call to Load. started is false until StartMonitors or Start is called.
-// Call Stop (or Unload) to stop a monitor.
+// Call Stop (or Unload) to stop a monitor. A monitor stopped by Stop is held:
+// StartMonitors doesn't start it until Start is called.
 //
 // Start/stop monitors only through the Loader. DO NOT call Monitor.Start or
 // Monitor.Stop directly, else the running state of the monitor and the Loader
@@ -51,6 +52,11 @@ type loadedMonitor struct {
 	// startPending is true if the monitor was started while a monitor with
 	// the same ID was still stopping. It starts when that stop finishes.
 	startPending bool
+
+	// held is true if the monitor was stopped by Stop. StartMonitors doesn't
+	// start it until Start. A reload that changes the monitor replaces it with
+	// a new loadedMonitor, which isn't held.
+	held bool
 }
 
 // stoppingMonitor is a monitor that runStop is stopping in the background. Its
@@ -147,7 +153,8 @@ func NewLoader(args LoaderArgs) *Loader {
 	}
 }
 
-// StartMonitors starts all monitors that have been loaded but not started.
+// StartMonitors starts all monitors that have been loaded but not started,
+// except monitors stopped by Stop, which start only when Start is called.
 // This should be called after Load. On Blip startup, the server calls Load
 // in Server.Boot, then StartMonitors in server.Run. The user can reload
 // by calling the server API: /monitors/reload.
@@ -166,7 +173,7 @@ func (ml *Loader) StartMonitors() {
 	// roughly the same time. A simple wait more evenly distributes the loads.
 	n := 0
 	for i := range ml.repo {
-		if !ml.repo[i].started && !ml.repo[i].startPending {
+		if !ml.repo[i].started && !ml.repo[i].startPending && !ml.repo[i].held {
 			n += 1
 		}
 	}
@@ -175,8 +182,8 @@ func (ml *Loader) StartMonitors() {
 
 	// Start monitors that aren't started yet
 	for i := range ml.repo {
-		if ml.repo[i].started || ml.repo[i].startPending {
-			continue // skip started monitors and monitors waiting to start
+		if ml.repo[i].started || ml.repo[i].startPending || ml.repo[i].held {
+			continue // skip started, waiting to start, and stopped by Stop
 		}
 
 		m := ml.repo[i] // m is *loadedMonitor
@@ -243,8 +250,9 @@ func wait(n int) int {
 
 // Load loads all configured monitors and unloads (stops and removes) monitors
 // that have been removed or changed since the last call to Load. It does not
-// start new monitors. Call StartMonitors after Load to start new (or previously
-// stopped) monitors.
+// start new monitors. Call StartMonitors after Load to start new and changed
+// monitors. A monitor stopped by Stop stays stopped until Start, unless its
+// config changes or it's removed and loaded again.
 //
 // Server.Boot calls Load, then Server.Run calls StartMonitors.
 //
@@ -714,11 +722,15 @@ func (ml *Loader) TryStart(monitorId string) (StartResult, error) {
 	if m.started {
 		return START_RUNNING, nil
 	}
+	// Not held even if the StartMonitor plugin declines it, so the next
+	// StartMonitors asks the plugin again
+	m.held = false
 	return ml.start(m) // START_PENDING while the monitor ID is stopping
 }
 
 // Stop stops a monitor but does not unload it, and cancels a pending start.
-// It can be started again by calling Start. Stop waits for the monitor to stop,
+// The monitor stays stopped, even if it wasn't running, until Start is called:
+// StartMonitors doesn't start it. Stop waits for the monitor to stop,
 // or for an unloaded or replaced monitor with the same ID that's still stopping,
 // but no longer than the stop timeout. It returns ErrStopTimeout if the monitor
 // is still stopping; it keeps stopping in the background.
@@ -747,6 +759,7 @@ func (ml *Loader) stopWait(monitorId string, lock, remove bool) error {
 			m.startPending = false
 			status.Monitor(monitorId, status.MONITOR, "pending start canceled at %s", blip.FormatTime(time.Now()))
 		}
+		m.held = true
 		ml.stop(m)
 	}
 	sm := ml.stopping[monitorId] // nil if not stopping

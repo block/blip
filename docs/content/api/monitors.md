@@ -81,6 +81,8 @@ Stops one monitor.
 
 The monitor is stopped but not unloaded, which means it reported by status endpoints.
 
+The monitor stays stopped across [`POST /monitors/reload`](#post-monitorsreload) until [`POST /monitors/start`](#post-monitorsstartidid), unless its config changes, it's removed and loaded again, or Blip restarts.
+
 The request waits for the monitor to stop, but no longer than [`config.monitor-loader.stop-timeout`]({{< ref "/config/config-file#stop-timeout" >}}).
 
 ### Query

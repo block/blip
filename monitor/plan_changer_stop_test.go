@@ -51,7 +51,7 @@ type offlineTestSQLDriver struct{}
 func (offlineTestSQLDriver) Open(string) (driver.Conn, error) { return nil, errors.New("offline") }
 
 func TestPlanChangerStopsDuringOfflineWait(t *testing.T) {
-	// While MySQL is offline, the PCH waits its retry backoff (up to 60s)
+	// While MySQL is offline, the PCH waits its retry backoff (up to about 90s: 60s plus jitter)
 	// between state checks. Stopping it must not wait for that.
 	const monitorId = "pch-stop"
 	defer status.RemoveMonitor(monitorId)

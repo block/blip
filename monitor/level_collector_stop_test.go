@@ -5,6 +5,8 @@ package monitor
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,5 +105,46 @@ func TestLevelCollectorStopCancelsCollection(t *testing.T) {
 	// The canceled collection's metrics are dropped, not reported collected
 	if s := status.ReportMonitors(monitorId)[monitorId][status.LEVEL_COLLECT]; !strings.HasSuffix(s, ": stopped; metrics dropped") {
 		t.Errorf("%s status = %q, expected stopped; metrics dropped", status.LEVEL_COLLECT, s)
+	}
+}
+
+func TestLevelCollectorStopDropsQueuedMetrics(t *testing.T) {
+	// Metrics from a complete collection that haven't been sent to the sinks
+	// when the LCO stops are dropped, not sent after the monitor stopped.
+	// Block TransformMetrics so that metrics are received and queued, then
+	// stop the LCO, then let TransformMetrics return.
+	const monitorId = "lco-stop-queued"
+	defer status.RemoveMonitor(monitorId)
+	TickerDuration(10*time.Millisecond, time.Second)
+	defer TickerDuration(time.Second, time.Second)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce, releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	var sent atomic.Int32
+	c := newStopTestLCO(monitorId, "every", mock.MetricsCollector{DomainFunc: func() string { return "test.lco-stop-queued" }})
+	c.transformMetrics = func([]*blip.Metrics) error {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return nil
+	}
+	c.sinks = []blip.Sink{mock.Sink{SendFunc: func(context.Context, *blip.Metrics) error {
+		sent.Add(1)
+		return nil
+	}}}
+
+	runStopLCO(t, c, func() {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for TransformMetrics")
+		}
+		time.Sleep(50 * time.Millisecond) // queue more metrics
+	})
+	releaseOnce.Do(func() { close(release) })
+	time.Sleep(100 * time.Millisecond)
+	if n := sent.Load(); n != 0 {
+		t.Errorf("sinks got %d sends after stop, expected 0", n)
 	}
 }

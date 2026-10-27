@@ -127,10 +127,11 @@ func (pch *planChanger) setErr(err error) {
 }
 
 // Run calls CheckState every second; or, if offline, it uses an exponential
-// backoff up to 60 seconds until back online (MySQL connection ok). There is
-// no logic in this function; it's just a timed loop to call CheckState. It's
-// run as a goroutine from Monitor.Run only if config.monitors.plans.adjust
-// is enabled (blip.ConfigPlanChange.Enabled returns true).
+// backoff up to about 90 seconds (60 seconds plus jitter) until back online
+// (MySQL connection ok). There is no logic in this function; it's just a timed
+// loop to call CheckState. It's run as a goroutine from Monitor.Run only if
+// config.monitors.plans.adjust is enabled (blip.ConfigPlanChange.Enabled
+// returns true).
 func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 	defer close(doneChan)
 	defer status.Monitor(pch.monitorId, status.PLAN_CHANGER, "not running")

@@ -152,6 +152,10 @@ var (
 // This is a goroutine run by keepRecvMetrics and restarted by keepRecvMetrics
 // if a sink (or the transformMetrics) panics. It stops when stopSinksChan is
 // closed in Run, and it closes doneChan when stopped.
+//
+// When stopSinksChan is closed, metrics not yet sent are dropped, so a stopped
+// or removed monitor doesn't send metrics. recvMetrics checks after it receives
+// metrics and before each sink Send. A Send in progress isn't canceled.
 func (c *lco) recvMetrics(stopSinksChan, doneChan chan struct{}) {
 	defer func() {
 		close(doneChan)
@@ -162,6 +166,15 @@ func (c *lco) recvMetrics(stopSinksChan, doneChan chan struct{}) {
 			c.event.Error(event.LCO_RECEIVER_PANIC, perr.Error())
 		}
 	}()
+	stopped := func() bool {
+		select {
+		case <-stopSinksChan:
+			blip.Debug("%s: stopped, dropping metrics not sent", c.monitorId)
+			return true
+		default:
+			return false
+		}
+	}
 RECV:
 	for {
 		status.Monitor(c.monitorId, status.LEVEL_SINKS, "idle")
@@ -169,6 +182,9 @@ RECV:
 		case <-stopSinksChan:
 			return
 		case metrics := <-c.metricsChan:
+			if stopped() { // select picks randomly when both are ready
+				return
+			}
 			if c.transformMetrics != nil {
 				blip.Debug("%s: transform metrics", c.monitorId)
 				status.Monitor(c.monitorId, status.LEVEL_SINKS, "TransformMetrics")
@@ -181,6 +197,9 @@ RECV:
 			for _, m := range metrics {
 				coId := fmt.Sprintf("%s/%s/%d", m.Plan, m.Level, m.Interval)
 				for _, sink := range c.sinks {
+					if stopped() {
+						return
+					}
 					sinkName := sink.Name()
 					status.Monitor(c.monitorId, status.LEVEL_SINKS, "%s", coId+": sending to "+sinkName)
 					err := sink.Send(context.Background(), m) // @todo ctx with timeout
@@ -223,8 +242,9 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 
 	// Keep receiving metrics for as long as the LCO is running
 	stopSinksChan := make(chan struct{})
+	stopSinks := sync.OnceFunc(func() { close(stopSinksChan) })
 	go c.keepRecvMetrics(stopSinksChan)
-	defer close(stopSinksChan)
+	defer stopSinks()
 
 	// -----------------------------------------------------------------------
 	// LCO main loop: collect metrics every configured minimum level interval
@@ -238,11 +258,13 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 	ticker := time.NewTicker(td)
 	defer ticker.Stop()
 
-	// stop stops changePlan goroutine (if any) and prevents new ones in the
+	// stop stops sending metrics to sinks, which drops metrics not sent yet,
+	// stops changePlan goroutine (if any) and prevents new ones in the
 	// pathological case that the LCH calls ChangePlan while the LCO is
 	// terminating, then stops the engine
 	stop := func() {
 		blip.Debug("stopChan closed s=%d interval=%d", s, interval)
+		stopSinks()
 		c.stopChangePlan()
 		c.engine.Stop() // stop all collectors and run their cleanup func
 	}
@@ -335,7 +357,8 @@ func (c *lco) stopChangePlan() {
 
 // collect collects metrics at one level and sends them to the sinks. If ctx
 // is canceled (the LCO is stopping), the collection is canceled, and its
-// metrics are dropped.
+// metrics are dropped. Metrics that collect has queued for the sinks but
+// recvMetrics hasn't sent yet are dropped too.
 func (c *lco) collect(ctx context.Context, interval uint, levelName string, startTime time.Time) {
 	status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s: collecting", c.plan.Name, levelName)
 	dropped := false // stopped during collection

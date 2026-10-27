@@ -4,6 +4,8 @@ package monitor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -197,5 +199,82 @@ func TestLevelCollectorStopDropsMetricsAfterSend(t *testing.T) {
 		if n := transforms.Load() - before; n != 0 {
 			t.Fatalf("run %d: TransformMetrics called %d times after stop, expected 0", i, n)
 		}
+	}
+}
+
+func TestLevelCollectorStopDuringSendDoesNotAddStatus(t *testing.T) {
+	// A sink Send in progress when the LCO stops can return after the Loader
+	// has removed the monitor's status. recvMetrics must not set a status
+	// then, which would add back the status of a removed monitor. Block the
+	// first Send, stop the LCO, remove the status, then let the Send return.
+	for _, sendErr := range []error{errors.New("send failed"), nil} {
+		t.Run(fmt.Sprintf("err=%v", sendErr), func(t *testing.T) {
+			const monitorId = "lco-stop-during-send"
+			defer status.RemoveMonitor(monitorId)
+			TickerDuration(10*time.Millisecond, time.Second)
+			defer TickerDuration(time.Second, time.Second)
+
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			returned := make(chan struct{})
+			var once sync.Once
+			c := newStopTestLCO(monitorId, "every", mock.MetricsCollector{DomainFunc: func() string { return "test.lco-stop-during-send" }})
+			c.sinks = []blip.Sink{mock.Sink{SendFunc: func(context.Context, *blip.Metrics) error {
+				err := errors.New("not first send")
+				once.Do(func() {
+					close(entered)
+					<-release
+					defer close(returned)
+					err = sendErr
+				})
+				return err
+			}}}
+
+			runStopLCO(t, c, func() {
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("timeout waiting for sink Send")
+				}
+			})
+			status.RemoveMonitor(monitorId)
+			close(release)
+			<-returned
+			time.Sleep(50 * time.Millisecond) // let recvMetrics return
+			if s, ok := status.ReportMonitors(monitorId)[monitorId]; ok {
+				t.Errorf("status of removed monitor added back: %v", s)
+			}
+		})
+	}
+}
+
+// cancelAfterFirstCheck is a context that reports canceled after the first
+// Err call. In collect, that's the check right after Engine.Collect, so it's
+// as if the LCO stopped after collect queued the metrics.
+type cancelAfterFirstCheck struct {
+	context.Context
+	checks atomic.Int32
+}
+
+func (c *cancelAfterFirstCheck) Err() error {
+	if c.checks.Add(1) > 1 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestLevelCollectorStopAfterQueueReportsCollected(t *testing.T) {
+	// If the LCO stops after collect queued the metrics, collect reports
+	// them collected, not dropped: recvMetrics drops them, if it hasn't sent
+	// them yet, and clears the sinks status.
+	const monitorId = "lco-stop-after-queue"
+	defer status.RemoveMonitor(monitorId)
+	c := newStopTestLCO(monitorId, "every", mock.MetricsCollector{DomainFunc: func() string { return "test.lco-stop-after-queue" }})
+	c.collect(&cancelAfterFirstCheck{Context: context.Background()}, 1, "every", time.Now())
+	if n := len(c.metricsChan); n != 1 {
+		t.Fatalf("%d metrics queued, expected 1", n)
+	}
+	if s := status.ReportMonitors(monitorId)[monitorId][status.LEVEL_COLLECT]; !strings.Contains(s, ": collected in ") {
+		t.Errorf("%s status = %q, expected collected in", status.LEVEL_COLLECT, s)
 	}
 }

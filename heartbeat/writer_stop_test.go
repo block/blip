@@ -75,14 +75,28 @@ func stopWriter(t *testing.T, w *heartbeat.Writer, monitorId, want string) time.
 		time.Sleep(5 * time.Millisecond)
 	}
 
+	// A stop isn't an error. The writer sets its final status, "stopped", when
+	// it returns, so check the status until then. This catches an error status
+	// only some of the time, so callers stop the writer several times.
 	t0 := time.Now()
 	close(stopChan)
-	select {
-	case <-doneChan:
-	case <-time.After(time.Minute):
-		t.Fatal("heartbeat writer did not stop")
+	timeout := time.After(time.Minute)
+	errStatus := ""
+	for {
+		if s := status.ReportMonitors(monitorId)[monitorId][status.HEARTBEAT_WRITER]; strings.Contains(s, "error") {
+			errStatus = s
+		}
+		select {
+		case <-doneChan:
+			if errStatus != "" {
+				t.Errorf("heartbeat writer status %q on stop, expected no error", errStatus)
+			}
+			return time.Since(t0)
+		case <-timeout:
+			t.Fatal("heartbeat writer did not stop")
+		default:
+		}
 	}
-	return time.Since(t0)
 }
 
 func TestWriterStopsDuringWaits(t *testing.T) {
@@ -133,20 +147,22 @@ func TestWriterStopsDuringWrite(t *testing.T) {
 
 	defer writeTestHangAt.Store(0)
 
-	// First write (INSERT) hangs. The status is set before the write, so the
-	// stop can come just before the write starts, which tests stopping it too.
-	writeTestWrites.Store(0)
-	writeTestHangAt.Store(1)
-	w := heartbeat.NewWriter(monitorId, db, blip.ConfigHeartbeat{Freq: "1s", Table: "heartbeat"})
-	if d := stopWriter(t, w, monitorId, "first insert"); d > timeout/10 {
-		t.Errorf("stop during first write took %s, expected well under %s", d, timeout)
-	}
+	for i := 0; i < 20; i++ {
+		// First write (INSERT) hangs. The status is set before the write, so the
+		// stop can come just before the write starts, which tests stopping it too.
+		writeTestWrites.Store(0)
+		writeTestHangAt.Store(1)
+		w := heartbeat.NewWriter(monitorId, db, blip.ConfigHeartbeat{Freq: "1s", Table: "heartbeat"})
+		if d := stopWriter(t, w, monitorId, "first insert"); d > timeout/10 {
+			t.Errorf("stop during first write took %s, expected well under %s", d, timeout)
+		}
 
-	// The first write succeeds, and the first heartbeat (UPDATE) hangs
-	writeTestWrites.Store(0)
-	writeTestHangAt.Store(2)
-	w = heartbeat.NewWriter(monitorId, db, blip.ConfigHeartbeat{Freq: "10ms", Table: "heartbeat"})
-	if d := stopWriter(t, w, monitorId, "write"); d > timeout/10 {
-		t.Errorf("stop during heartbeat write took %s, expected well under %s", d, timeout)
+		// The first write succeeds, and the first heartbeat (UPDATE) hangs
+		writeTestWrites.Store(0)
+		writeTestHangAt.Store(2)
+		w = heartbeat.NewWriter(monitorId, db, blip.ConfigHeartbeat{Freq: "10ms", Table: "heartbeat"})
+		if d := stopWriter(t, w, monitorId, "write"); d > timeout/10 {
+			t.Errorf("stop during heartbeat write took %s, expected well under %s", d, timeout)
+		}
 	}
 }

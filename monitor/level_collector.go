@@ -154,7 +154,9 @@ var (
 //
 // When ctx is canceled, metrics not yet sent are dropped, so a stopped or
 // removed monitor doesn't send metrics. recvMetrics checks after it receives
-// metrics and before each sink Send. A Send in progress isn't canceled.
+// metrics and before each sink Send. A Send in progress isn't canceled, but
+// after it returns, recvMetrics doesn't set a status, which would add back the
+// status of a monitor that was removed.
 func (c *lco) recvMetrics(ctx context.Context, doneChan chan struct{}) {
 	defer func() {
 		close(doneChan)
@@ -171,7 +173,7 @@ func (c *lco) recvMetrics(ctx context.Context, doneChan chan struct{}) {
 		}
 	}()
 RECV:
-	for {
+	for ctx.Err() == nil {
 		status.Monitor(c.monitorId, status.LEVEL_SINKS, "idle")
 		select {
 		case <-ctx.Done():
@@ -200,6 +202,11 @@ RECV:
 					err := sink.Send(context.Background(), m) // @todo ctx with timeout
 					if err != nil {
 						c.event.Errorf(event.SINK_SEND_ERROR, "%s :%s", sinkName, err) // log by default
+					}
+					if ctx.Err() != nil { // stopped during Send
+						return
+					}
+					if err != nil {
 						status.Monitor(c.monitorId, "error:"+sinkName, "%s", err.Error())
 					} else {
 						status.RemoveComponent(c.monitorId, "error:"+sinkName)
@@ -331,13 +338,14 @@ func (c *lco) stopChangePlan() {
 // recvMetrics hasn't sent yet are dropped too.
 func (c *lco) collect(ctx context.Context, interval uint, levelName string, startTime time.Time) {
 	status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s: collecting", c.plan.Name, levelName)
+	queued := false // for the sinks; recvMetrics drops them if ctx is canceled
 	defer func() {
 		if err := recover(); err != nil { // catch panic in engine and TransformMetrics
 			b := make([]byte, 4096)
 			n := runtime.Stack(b, false)
 			c.event.Errorf(event.LCO_COLLECT_PANIC, "PANIC: %s: %s\n%s", c.monitorId, err, string(b[0:n]))
 		}
-		if ctx.Err() != nil {
+		if !queued && ctx.Err() != nil {
 			status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s/%d: stopped; metrics dropped", c.plan.Name, levelName, interval)
 			return
 		}
@@ -367,6 +375,7 @@ func (c *lco) collect(ctx context.Context, interval uint, levelName string, star
 	status.Monitor(c.monitorId, status.LEVEL_COLLECT, "%s/%s: sending", c.plan.Name, levelName)
 	select {
 	case c.metricsChan <- metrics:
+		queued = true
 	default:
 		c.metricsDropped.Add(1)
 		c.event.Errorf(event.LCO_METRICS_FAULT, "metrics channel blocked (check for sink errors), dropping metrics: %s", metrics)

@@ -104,6 +104,9 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 		ctx, cancel = context.WithTimeout(stopCtx, WriteTimeout)
 		_, err = w.db.ExecContext(ctx, ping, params...)
 		cancel()
+		if stopCtx.Err() != nil {
+			return nil // stopped; a canceled write isn't an error
+		}
 		if err == nil { // success
 			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "sleep")
 			break
@@ -141,6 +144,9 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 		ctx, cancel = context.WithTimeout(stopCtx, WriteTimeout)
 		_, err = w.db.ExecContext(ctx, ping, w.srcId)
 		cancel()
+		if stopCtx.Err() != nil {
+			return nil // stopped; a canceled write isn't an error
+		}
 		if err != nil {
 			blip.Debug("%s: %s", w.monitorId, err.Error())
 			if sqlutil.ReadOnly(err) {

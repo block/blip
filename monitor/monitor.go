@@ -246,8 +246,9 @@ func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 		// Monitor is running. Wait for either Stop (which closes m.runLoopChan)
 		// or one of the monitor subsystems to return/panic (which closes m.runChan).
 		// On Stop, return immediately: user is stopping the monitor completely.
-		// On m.runChan close (via stop func), we restart almost immediately because
-		// Blip never stops trying to send metrics.
+		// On m.runChan close (via stop func), we restart almost immediately to
+		// resume collecting metrics. Like a stop, the restart drops the collection
+		// in progress and metrics not yet sent to sinks (see lco.Run).
 		m.retry.Reset()
 		status.Monitor(m.monitorId, status.MONITOR, "running since %s", blip.FormatTime(time.Now()))
 		select {

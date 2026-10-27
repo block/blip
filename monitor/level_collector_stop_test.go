@@ -147,4 +147,55 @@ func TestLevelCollectorStopDropsQueuedMetrics(t *testing.T) {
 	if n := sent.Load(); n != 0 {
 		t.Errorf("sinks got %d sends after stop, expected 0", n)
 	}
+	// The sinks status isn't left at "TransformMetrics"
+	if s, ok := status.ReportMonitors(monitorId)[monitorId][status.LEVEL_SINKS]; ok {
+		t.Errorf("%s status = %q, expected none after the metrics were dropped", status.LEVEL_SINKS, s)
+	}
+}
+
+func TestLevelCollectorStopDropsMetricsAfterSend(t *testing.T) {
+	// After a sink Send returns, recvMetrics can receive metrics that were
+	// queued during the Send even though the LCO has stopped, because select
+	// picks randomly when both are ready. It must drop them before it calls
+	// TransformMetrics. Block the first Send so that metrics queue, stop the
+	// LCO, then let the Send return. One run catches a missing check half the
+	// time, so run several.
+	const monitorId = "lco-stop-after-send"
+	defer status.RemoveMonitor(monitorId)
+	TickerDuration(10*time.Millisecond, time.Second)
+	defer TickerDuration(time.Second, time.Second)
+
+	for i := 0; i < 20; i++ {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var enteredOnce, releaseOnce sync.Once
+		var transforms atomic.Int32
+		c := newStopTestLCO(monitorId, "every", mock.MetricsCollector{DomainFunc: func() string { return "test.lco-stop-after-send" }})
+		c.transformMetrics = func([]*blip.Metrics) error {
+			transforms.Add(1)
+			return nil
+		}
+		c.sinks = []blip.Sink{mock.Sink{SendFunc: func(context.Context, *blip.Metrics) error {
+			enteredOnce.Do(func() {
+				close(entered)
+				<-release
+			})
+			return nil
+		}}}
+
+		runStopLCO(t, c, func() {
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for sink Send")
+			}
+			time.Sleep(30 * time.Millisecond) // queue more metrics
+		})
+		before := transforms.Load()
+		releaseOnce.Do(func() { close(release) })
+		time.Sleep(30 * time.Millisecond)
+		if n := transforms.Load() - before; n != 0 {
+			t.Fatalf("run %d: TransformMetrics called %d times after stop, expected 0", i, n)
+		}
+	}
 }

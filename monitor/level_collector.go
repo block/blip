@@ -170,6 +170,9 @@ func (c *lco) recvMetrics(stopSinksChan, doneChan chan struct{}) {
 		select {
 		case <-stopSinksChan:
 			blip.Debug("%s: stopped, dropping metrics not sent", c.monitorId)
+			// Clear "TransformMetrics" or "sending to"; don't set a status,
+			// which would add back the status of a monitor that was removed
+			status.RemoveComponent(c.monitorId, status.LEVEL_SINKS)
 			return true
 		default:
 			return false

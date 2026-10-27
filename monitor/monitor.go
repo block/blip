@@ -71,7 +71,7 @@ type Monitor struct {
 	hbw        *heartbeat.Writer
 
 	// Control chans and sync
-	lifeMux     *sync.Mutex   // serializes Start and Stop
+	lifeMux     *sync.Mutex   // serializes Start and Stop; guards runLoopChan and runLoopDone
 	runLoopChan chan struct{} // Stop(): stop the monitor
 	runLoopDone chan struct{} // closed when runLoop returns
 	runChan     chan struct{} // stop goroutines run by monitor
@@ -154,42 +154,18 @@ func (m *Monitor) Stop() error {
 func (m *Monitor) halt() bool {
 	m.lifeMux.Lock()
 	defer m.lifeMux.Unlock()
-
+	if m.runLoopChan == nil || isClosed(m.runLoopChan) {
+		blip.Debug("%s: Stop call: not running", m.monitorId)
+		return false
+	}
 	blip.Debug("%s: Stop call", m.monitorId)
 	defer blip.Debug("%s: Stop return", m.monitorId)
 
-	m.runMux.Lock()
-	if m.runLoopChan == nil {
-		m.runMux.Unlock()
-		blip.Debug("%s: not started", m.monitorId)
-		return false
-	}
-
-	// Stop runLoop() _first_, else it will restart run()
-	select {
-	case <-m.runLoopChan: // not running
-		m.runMux.Unlock()
-		blip.Debug("%s: already stopped", m.monitorId)
-		return false
-	default: // running
-	}
-
-	// Stop runLoop so it won't restart everything
+	// Stop runLoop, which stops the subsystems and closes database resources
+	// before it returns. Waiting for it (with lifeMux held) ensures that a
+	// later Start doesn't run a second runLoop while this one is still running.
 	close(m.runLoopChan)
-	runLoopDone := m.runLoopDone
-
-	// Stop and wait for monitor subsystems
-	m.stop(false, "Stop")
-
-	// Everything should be stopped now, so close database resources.
-	m.closeDB()
-	m.runMux.Unlock()
-
-	// Wait for runLoop to return. If it was starting the subsystems, it stops
-	// them and closes database resources again before returning. Waiting here
-	// (with lifeMux held) ensures that a later Start doesn't run a second
-	// runLoop while this one is still running.
-	<-runLoopDone
+	<-m.runLoopDone
 
 	status.Monitor(m.monitorId, status.MONITOR, "stopped at %s", blip.FormatTime(time.Now()))
 	return true
@@ -204,20 +180,10 @@ func (m *Monitor) halt() bool {
 func (m *Monitor) Start() error {
 	m.lifeMux.Lock()
 	defer m.lifeMux.Unlock()
-	m.runMux.Lock()
-	defer m.runMux.Unlock()
-	if m.runLoopChan == nil {
-		// first start
-		blip.Debug("%s: start (first)", m.monitorId)
-	} else {
-		select {
-		case <-m.runLoopChan:
-			// not running; Stop waited for the previous runLoop to return
-			blip.Debug("%s: start (again)", m.monitorId)
-		default:
-			return fmt.Errorf("already running")
-		}
+	if m.runLoopChan != nil && !isClosed(m.runLoopChan) {
+		return fmt.Errorf("already running")
 	}
+	blip.Debug("%s: start", m.monitorId)
 	m.runLoopChan = make(chan struct{})
 	m.runLoopDone = make(chan struct{})
 	go m.runLoop(m.runLoopChan, m.runLoopDone)
@@ -235,7 +201,7 @@ func (m *Monitor) Start() error {
 func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 	defer close(doneChan)
 	defer func() {
-		// Stop subsystems that startup started after Stop called stop, if any
+		// Stop the subsystems, if any are running, and close database resources
 		m.runMux.Lock()
 		m.stop(false, "runLoop")
 		m.closeDB()
@@ -243,8 +209,7 @@ func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 	}()
 	defer blip.Debug("%s: runLoop return", m.monitorId)
 	for {
-		// New runChan for every iteration; it can only be used/closed once.
-		// Don't make a new one if Stop was called, else nothing would close it.
+		// New runChan for every iteration; it can only be used/closed once
 		m.runMux.Lock()
 		select {
 		case <-stopChan:
@@ -384,9 +349,8 @@ func (m *Monitor) startup(stopChan chan struct{}) (err error) {
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
 
-	// Stop closes stopChan, stops subsystems, and closes the database in one
-	// runMux critical section. If it did that after makeDB, m.db is closed (nil),
-	// so don't start subsystems.
+	// Don't start subsystems if Stop was called. runLoop returns when startup
+	// does, and it stops the subsystems that startup started before Stop.
 	select {
 	case <-stopChan:
 		return nil // runLoop stopped (Stop called)

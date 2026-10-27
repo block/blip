@@ -194,12 +194,6 @@ A monitor that hasn't stopped by then keeps stopping in the background, and Blip
 Blip reports it again every 10 times the stop timeout until it stops.
 If the monitor is reloaded with the same ID, the new monitor doesn't start until the old one has stopped.
 
-A stop waits for each monitor subsystem to stop:
-
-* The level collector checks for stop once per collection tick (1 second), and it finishes a collection in progress first. A collection can run for up to the engine max runtime: the plan's shortest level interval minus 10% (at most 1 second less).
-* The plan changer checks for stop once per second, or after its retry wait while MySQL is offline.
-* The heartbeat writer checks for stop after each heartbeat (`heartbeat.freq`), or after its retry wait (10 or 20 seconds) while it can't write.
-
 A healthy monitor usually stops in about 1 second, but a slow collection or a heartbeat on a read-only server can take longer than the default stop timeout.
 
 ---

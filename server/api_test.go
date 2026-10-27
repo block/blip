@@ -123,6 +123,7 @@ func TestAPIMonitorsStart(t *testing.T) {
 	// running or the StartMonitor plugin declines to start it. A monitor
 	// stopped by POST /monitors/stop stays stopped across a reload.
 	cfg := blip.DefaultConfig()
+	cfg.MonitorLoader.StopTimeout = "200ms"
 	dbf := blockingDbFactory{
 		DbFactory: dbconn.NewConnFactory(nil, nil),
 		monitorId: "api-pending",
@@ -231,7 +232,7 @@ func TestAPIMonitorsStart(t *testing.T) {
 	}
 
 	// Start api-pending and stop it while it's stuck in startup (making its
-	// DB), so the stop times out after the default stop timeout (3s). Starting
+	// DB), so the stop times out after the stop timeout (200ms). Starting
 	// it while it's still stopping is pending, and starting it again is still
 	// pending, not already running.
 	if got := post("/monitors/start?id=api-pending"); got != http.StatusOK {

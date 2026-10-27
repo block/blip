@@ -67,8 +67,6 @@ type planChanger struct {
 	event   event.MonitorReceiver
 	retry   *backoff.ExponentialBackOff
 	lerr    error
-
-	readOnlyTimeout time.Duration // how long to wait for readOnlyQuery
 }
 
 func NewPlanChanger(args PlanChangerArgs) *planChanger {
@@ -112,8 +110,6 @@ func NewPlanChanger(args PlanChangerArgs) *planChanger {
 		first:   true,
 		event:   event.MonitorReceiver{MonitorId: args.MonitorId},
 		retry:   retry,
-
-		readOnlyTimeout: 10 * time.Second,
 	}
 }
 
@@ -144,10 +140,6 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 	defer cancel()
 
 	for {
-		if ctx.Err() != nil {
-			return nil // stopped
-		}
-
 		pch.CheckState(ctx)
 
 		wait := 1 * time.Second
@@ -264,7 +256,7 @@ func (pch *planChanger) state(ctx context.Context) string {
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "checking MySQL read-only")
 
 	var ro, sro int
-	qctx, cancel := context.WithTimeout(ctx, pch.readOnlyTimeout)
+	qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err := pch.db.QueryRowContext(qctx, readOnlyQuery).Scan(&ro, &sro)
 	cancel()
 	if ctx.Err() != nil {

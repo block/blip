@@ -50,82 +50,68 @@ type offlineTestSQLDriver struct{}
 
 func (offlineTestSQLDriver) Open(string) (driver.Conn, error) { return nil, errors.New("offline") }
 
-func TestPlanChangerStopsDuringOfflineWait(t *testing.T) {
-	// While MySQL is offline, the PCH waits its retry backoff (up to about 90s: 60s plus jitter)
-	// between state checks. Stopping it must not wait for that.
-	const monitorId = "pch-stop"
-	defer status.RemoveMonitor(monitorId)
-	db, err := sql.Open(offlineTestDriver, "")
+// stopPCH runs a PCH on a database opened with driverName, waits until ready
+// returns true, then stops the PCH and fails the test if the stop takes 1s or
+// longer. While MySQL is offline, the PCH waits 1 minute between checks.
+func stopPCH(t *testing.T, monitorId, driverName string, ready func() bool) {
+	t.Helper()
+	db, err := sql.Open(driverName, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-
-	const wait = time.Minute
 	pch := NewPlanChanger(PlanChangerArgs{MonitorId: monitorId, DB: db, HA: ha.Disabled})
-	pch.retry.InitialInterval = wait
-	pch.retry.MaxInterval = wait
+	pch.retry.InitialInterval = time.Minute
+	pch.retry.MaxInterval = time.Minute
 	pch.retry.Reset()
 
 	stopChan := make(chan struct{})
 	doneChan := make(chan struct{})
 	go pch.Run(stopChan, doneChan)
-
-	// Wait for the first state check (offline), then stop during the wait
 	deadline := time.Now().Add(5 * time.Second)
-	for status.ReportMonitors(monitorId)[monitorId]["error:"+status.PLAN_CHANGER] == "" {
+	for !ready() {
 		if time.Now().After(deadline) {
 			close(stopChan)
-			t.Fatal("timeout waiting for PCH state check")
+			t.Fatal("timeout waiting for the PCH")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+
 	t0 := time.Now()
 	close(stopChan)
 	select {
 	case <-doneChan:
-	case <-time.After(2 * wait):
+	case <-time.After(time.Minute):
 		t.Fatal("PCH did not stop")
 	}
-	if d := time.Since(t0); d > wait/10 {
-		t.Errorf("stop during offline wait took %s, expected well under %s", d, wait)
+	if d := time.Since(t0); d >= time.Second {
+		t.Errorf("stop took %s, expected less than 1s", d)
 	}
 }
 
+func TestPlanChangerStopsDuringOfflineWait(t *testing.T) {
+	// While MySQL is offline, the PCH waits its retry backoff (up to about 90s:
+	// 60s plus jitter) between state checks. Stopping it must not wait for that.
+	const monitorId = "pch-stop"
+	defer status.RemoveMonitor(monitorId)
+	stopPCH(t, monitorId, offlineTestDriver, func() bool {
+		return status.ReportMonitors(monitorId)[monitorId]["error:"+status.PLAN_CHANGER] != ""
+	})
+}
+
 func TestPlanChangerStopsDuringStateQuery(t *testing.T) {
-	// The read-only query can wait up to the read-only timeout on a hung or
-	// partitioned MySQL. Stopping the PCH cancels it instead of waiting.
+	// The read-only query can wait up to 10s on a hung or partitioned MySQL.
+	// Stopping the PCH cancels it instead of waiting.
 	const monitorId = "pch-stop-query"
 	defer status.RemoveMonitor(monitorId)
-	db, err := sql.Open(hungTestDriver, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	const timeout = time.Minute
-	pch := NewPlanChanger(PlanChangerArgs{MonitorId: monitorId, DB: db, HA: ha.Disabled})
-	pch.readOnlyTimeout = timeout
-	stopChan := make(chan struct{})
-	doneChan := make(chan struct{})
-	go pch.Run(stopChan, doneChan)
-	select {
-	case <-hungTestQueries:
-	case <-time.After(5 * time.Second):
-		close(stopChan)
-		t.Fatal("timeout waiting for read-only query")
-	}
-
-	t0 := time.Now()
-	close(stopChan)
-	select {
-	case <-doneChan:
-	case <-time.After(2 * timeout):
-		t.Fatal("PCH did not stop")
-	}
-	if d := time.Since(t0); d > timeout/10 {
-		t.Errorf("stop during read-only query took %s, expected well under %s", d, timeout)
-	}
+	stopPCH(t, monitorId, hungTestDriver, func() bool {
+		select {
+		case <-hungTestQueries:
+			return true
+		default:
+			return false
+		}
+	})
 	// A canceled query isn't an error: the PCH didn't see MySQL offline
 	if e := status.ReportMonitors(monitorId)[monitorId]["error:"+status.PLAN_CHANGER]; e != "" {
 		t.Errorf("PCH error status %q after stop, expected none", e)

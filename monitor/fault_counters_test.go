@@ -437,9 +437,10 @@ func TestLevelCollectorCountsTransformDrops(t *testing.T) {
 		Config:           blip.ConfigMonitor{MonitorId: monitorId},
 		TransformMetrics: func([]*blip.Metrics) error { return errors.New("transform failed") },
 	}, nil)
-	stopSinksChan := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	doneChan := make(chan struct{})
-	go c.recvMetrics(stopSinksChan, doneChan)
+	go c.recvMetrics(ctx, doneChan)
 	c.metricsChan <- []*blip.Metrics{{MonitorId: monitorId}}
 	c.metricsChan <- []*blip.Metrics{{MonitorId: monitorId}}
 
@@ -447,7 +448,7 @@ func TestLevelCollectorCountsTransformDrops(t *testing.T) {
 	for counters(t, monitorId)[status.LEVEL_TRANSFORM_DROPPED] < 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	close(stopSinksChan)
+	cancel()
 	<-doneChan
 	if v := counters(t, monitorId)[status.LEVEL_TRANSFORM_DROPPED]; v != 2 {
 		t.Errorf("%s = %d, expected 2", status.LEVEL_TRANSFORM_DROPPED, v)

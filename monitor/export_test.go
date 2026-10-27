@@ -2,18 +2,18 @@
 
 package monitor
 
-import "sync"
+import "sync/atomic"
 
 // StopAfterTicks makes every LCO Run return at tick n+1, before it collects at
 // that tick, by closing stopChan. Use it for a test that runs one LCO, and call
-// the returned func to remove it. If more than one LCO reaches tick n+1,
+// the returned func to remove it. Ticks are counted across all LCOs, and
 // stopChan is closed only once.
 func StopAfterTicks(n uint, stopChan chan struct{}) func() {
-	var once sync.Once
+	var ticks atomic.Uint64
 	tickerMux.Lock()
-	tickHook = func(tick uint) {
-		if tick == n+1 {
-			once.Do(func() { close(stopChan) })
+	tickHook = func() {
+		if ticks.Add(1) == uint64(n)+1 {
+			close(stopChan)
 		}
 	}
 	tickerMux.Unlock()

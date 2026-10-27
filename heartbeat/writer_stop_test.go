@@ -21,13 +21,14 @@ import (
 
 // writeTestDriver is a fake SQL driver for the heartbeat writer: every write
 // succeeds, or fails with a MySQL read-only error if writeTestReadOnly is set,
-// or blocks until its context is canceled if writeTestHung is set.
+// or blocks until its context is canceled from write number writeTestHangAt on
+// (counted by writeTestWrites), if it's set.
 const writeTestDriver = "blip-heartbeat-write-test"
 
 var (
 	writeTestReadOnly atomic.Bool
-	writeTestHung     atomic.Bool
-	writeTestHungExec = make(chan struct{}, 10) // a hung write has started
+	writeTestHangAt   atomic.Int64
+	writeTestWrites   atomic.Int64
 )
 
 func init() {
@@ -46,8 +47,8 @@ func (writeTestConn) Prepare(string) (driver.Stmt, error) {
 func (writeTestConn) Close() error              { return nil }
 func (writeTestConn) Begin() (driver.Tx, error) { return nil, errors.New("no transactions") }
 func (writeTestConn) ExecContext(ctx context.Context, _ string, _ []driver.NamedValue) (driver.Result, error) {
-	if writeTestHung.Load() {
-		writeTestHungExec <- struct{}{}
+	n := writeTestWrites.Add(1)
+	if at := writeTestHangAt.Load(); at > 0 && n >= at {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -130,48 +131,22 @@ func TestWriterStopsDuringWrite(t *testing.T) {
 	defer func(d time.Duration) { heartbeat.WriteTimeout = d }(heartbeat.WriteTimeout)
 	heartbeat.WriteTimeout = timeout
 
-	writeTestHung.Store(true)
-	defer writeTestHung.Store(false)
+	defer writeTestHangAt.Store(0)
 
 	// First write (INSERT) hangs. The status is set before the write, so the
 	// stop can come just before the write starts, which tests stopping it too.
+	writeTestWrites.Store(0)
+	writeTestHangAt.Store(1)
 	w := heartbeat.NewWriter(monitorId, db, blip.ConfigHeartbeat{Freq: "1s", Table: "heartbeat"})
 	if d := stopWriter(t, w, monitorId, "first insert"); d > timeout/10 {
 		t.Errorf("stop during first write took %s, expected well under %s", d, timeout)
 	}
-	for len(writeTestHungExec) > 0 {
-		<-writeTestHungExec
-	}
 
-	// A heartbeat (UPDATE) hangs
-	writeTestHung.Store(false)
+	// The first write succeeds, and the first heartbeat (UPDATE) hangs
+	writeTestWrites.Store(0)
+	writeTestHangAt.Store(2)
 	w = heartbeat.NewWriter(monitorId, db, blip.ConfigHeartbeat{Freq: "10ms", Table: "heartbeat"})
-	stopChan := make(chan struct{})
-	doneChan := make(chan struct{})
-	go w.Write(stopChan, doneChan)
-	deadline := time.Now().Add(5 * time.Second)
-	for status.ReportMonitors(monitorId)[monitorId][status.HEARTBEAT_WRITER] != "sleep" {
-		if time.Now().After(deadline) {
-			close(stopChan)
-			t.Fatal("timeout waiting for first write")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	writeTestHung.Store(true)
-	select {
-	case <-writeTestHungExec:
-	case <-time.After(5 * time.Second):
-		close(stopChan)
-		t.Fatal("timeout waiting for hung heartbeat")
-	}
-	t0 := time.Now()
-	close(stopChan)
-	select {
-	case <-doneChan:
-	case <-time.After(2 * timeout):
-		t.Fatal("heartbeat writer did not stop")
-	}
-	if d := time.Since(t0); d > timeout/10 {
+	if d := stopWriter(t, w, monitorId, "write"); d > timeout/10 {
 		t.Errorf("stop during heartbeat write took %s, expected well under %s", d, timeout)
 	}
 }

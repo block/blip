@@ -13,12 +13,10 @@ import (
 // Sleep waits for d or until stopChan is closed. It returns false if stopChan
 // was closed. To sleep until a context is done, pass ctx.Done() as stopChan.
 func Sleep(stopChan <-chan struct{}, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
 	select {
 	case <-stopChan:
 		return false
-	case <-t.C:
+	case <-time.After(d): // an unfired timer is collected (Go 1.23+)
 		return true
 	}
 }

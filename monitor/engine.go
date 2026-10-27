@@ -445,10 +445,7 @@ SWEEP:
 	// are missing from this interval. Not an error event because, when the
 	// host is CPU-starved, this can happen every interval for every monitor.
 	notReturned := len(running)
-	if emrTimeout && emrCtx.Err() == context.Canceled {
-		emrTimeout = false // canceled (stopping), not timed out
-	}
-	if emrTimeout {
+	if emrTimeout && emrCtx.Err() == context.DeadlineExceeded { // not canceled (stopping)
 		e.counters.emrTimeouts.Add(1)
 		e.counters.domainsNotStarted.Add(uint64(notStarted))
 		e.counters.domainsNotReturned.Add(uint64(notReturned))

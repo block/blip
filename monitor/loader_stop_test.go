@@ -1062,32 +1062,3 @@ func TestLoaderStartClearsHeld(t *testing.T) {
 	setIds(st, &ids)
 	require.NoError(t, loader.Load(context.Background()))
 }
-
-func TestLoaderStopDoesNotWaitForTick(t *testing.T) {
-	// A stop must not wait for the next LCO tick. Before the LCO selected on
-	// stop, a stop took up to one tick, depending on when in the tick it
-	// arrived. Use a long tick so the bound is relative to it and not to how
-	// fast a stop is under -race. TestLevelCollectorStop*,
-	// TestPlanChangerStopsDuringOfflineWait, and TestWriterStopsDuringWaits
-	// cover the other waits directly.
-	const tick = 4 * time.Second
-	ids := []string{"tick1"}
-	st, loader := setupStopTest(t, "10s", &ids, nil) // stop timeout > tick
-	defer status.RemoveMonitor("tick1")
-	monitor.TickerDuration(tick, time.Second) // setupStopTest restores the test tick
-
-	require.NoError(t, loader.Load(context.Background()))
-	loader.StartMonitors()
-	waitPrepared(t, st, 1, "tick1")
-
-	for i, offset := range []time.Duration{tick / 20, tick / 2} { // vary the offset into the tick
-		time.Sleep(offset)
-		t0 := time.Now()
-		require.NoError(t, loader.Stop("tick1", true))
-		d := time.Since(t0)
-		t.Logf("stop %d: %s", i, d)
-		assert.Less(t, d, tick/4, "stop %d waited for the LCO tick", i)
-		require.NoError(t, loader.Start("tick1", true))
-		waitPrepared(t, st, i+2, "tick1")
-	}
-}

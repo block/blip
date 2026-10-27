@@ -204,7 +204,7 @@ A stop can take longer in these cases:
 
 * A collector, or its cleanup function, doesn't return promptly when its collection is canceled. A stop waits for every collector to return, then runs their cleanup functions.
 * A plan change is in progress, and a collector's `Prepare` doesn't return promptly when it's canceled. A stop cancels the plan change and waits for it.
-* The monitor is starting. A stop waits for it to load its plans. If they're in a table ([`plans.table`](#table-1)), that's the only time a starting monitor queries MySQL, and it can take up to 5 seconds (connecting included) when MySQL is unreachable or hung. Making the monitor's connections also calls its credentials function (for example, to get an IAM auth token), which can take up to 500 milliseconds each time, and a custom `DbProviderFactory` that blocks while making them delays the stop too.
+* The monitor is starting. A stop waits for it to make its connections, which calls its credentials function (for example, for an IAM auth token, up to 500 milliseconds each time) or a custom `DbProviderFactory`, and to load its plans, which queries MySQL only if they're in a table ([`plans.table`](#table-1)): up to 5 seconds, connecting included, when MySQL is unreachable or hung.
 
 ---
 

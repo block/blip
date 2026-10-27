@@ -51,6 +51,8 @@ Starts one monitor.
 `id` query key is required.
 
 If the monitor is still stopping, the request returns 202, and the monitor starts when it has stopped.
+If the `StartMonitor` plugin then declines to start it, or the start fails, the monitor status says so, and a failed start sends event `monitor-error` (or `monitor-panic`).
+Stopping the monitor before then cancels the pending start.
 
 ### Query
 

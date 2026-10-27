@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -101,8 +102,9 @@ type Loader struct {
 	*sync.Mutex
 
 	// stopping has one entry per monitor ID that is being stopped. The entry
-	// is removed when Monitor.Stop returns. While an ID has an entry, a new
-	// or restarted monitor with the same ID is not started (startPending)
+	// is removed by stopped, with the mutex held, after the monitor has halted
+	// and its MONITOR_STOPPED event has been sent. While an ID has an entry, a
+	// new or restarted monitor with the same ID is not started (startPending)
 	// so that two monitors with the same ID never run at the same time.
 	stopping    map[string]*stoppingMonitor
 	stopTimeout time.Duration
@@ -774,7 +776,19 @@ func (ml *Loader) Stop(monitorId string, lock bool) error {
 	}
 	var sm *stoppingMonitor
 	if m, ok := ml.repo[monitorId]; ok {
-		m.startPending = false
+		if m.startPending {
+			// Cancel the pending start and replace its "start pending" status
+			m.startPending = false
+			state := "stopped"
+			if prev, ok := ml.stopping[monitorId]; ok {
+				select {
+				case <-prev.done:
+				default:
+					state = "stopping"
+				}
+			}
+			status.Monitor(monitorId, status.MONITOR, "%s; pending start canceled at %s", state, blip.FormatTime(time.Now()))
+		}
 		sm = ml.stop(m)
 	}
 	if sm == nil {
@@ -917,13 +931,22 @@ func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor) bool {
 // stopped is called by runStop when a monitor has stopped, after its events are
 // sent. It removes the stop, and the error:stop status if the stop timed out
 // (stuck), and starts the monitor with the same ID if it's waiting to start
-// (startPending).
+// (startPending). If that start fails, stopped sends an event after it releases
+// the Loader mutex, because event receivers run synchronously.
 func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor, stuck bool) {
+	defer close(sm.finished)
+	if report := ml.removeStop(monitorId, sm, stuck); report != nil {
+		report()
+	}
+}
+
+// removeStop is the locked part of stopped. It returns a func that sends the
+// event for a pending start that failed, or nil.
+func (ml *Loader) removeStop(monitorId string, sm *stoppingMonitor, stuck bool) func() {
 	ml.Lock()
 	defer ml.Unlock()
-	defer close(sm.finished)
 	if ml.stopping[monitorId] != sm {
-		return // shouldn't happen
+		return nil // shouldn't happen
 	}
 	delete(ml.stopping, monitorId)
 	if stuck {
@@ -937,11 +960,47 @@ func (ml *Loader) stopped(monitorId string, sm *stoppingMonitor, stuck bool) {
 		// stopping in the background.
 		status.RemoveMonitor(monitorId)
 	}
-	if ok && m.startPending {
-		if _, err := ml.start(m); err != nil {
-			blip.Debug("%s: start after stop: %s", monitorId, err) // shouldn't happen
-		}
+	if !ok || !m.startPending {
+		return nil
 	}
+	return ml.startPending(m)
+}
+
+// startPending starts a monitor whose start was pending, when the stop it was
+// waiting for has finished. The client was told that the monitor would start
+// (API status 202), so a start that's declined or fails is reported in the
+// monitor status. It returns a func that sends the event for a start that
+// failed or panicked, or nil. The caller must hold the Loader mutex and send
+// the event after releasing it.
+//
+// It recovers a panic, for example in Plugins.StartMonitor, because it runs on
+// the stop goroutine, not on an API handler or the caller of StartMonitors.
+func (ml *Loader) startPending(m *loadedMonitor) (report func()) {
+	monitorId := m.monitor.MonitorId()
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		b := make([]byte, 4096)
+		n := runtime.Stack(b, false)
+		msg := fmt.Sprintf("pending start: PANIC: %s: %v\n%s", monitorId, r, b[:n])
+		status.Monitor(monitorId, "error:"+status.MONITOR, "pending start: PANIC: %v", r)
+		status.Monitor(monitorId, status.MONITOR, "not started: pending start panicked")
+		report = func() { m.monitor.event.Error(event.MONITOR_PANIC, msg) }
+	}()
+
+	res, err := ml.start(m)
+	if err != nil {
+		status.Monitor(monitorId, "error:"+status.MONITOR, "pending start: %s", err)
+		status.Monitor(monitorId, status.MONITOR, "not started: pending start failed")
+		msg := fmt.Sprintf("pending start: %s", err)
+		return func() { m.monitor.event.Error(event.MONITOR_ERROR, msg) }
+	}
+	if res == START_DECLINED {
+		status.Monitor(monitorId, status.MONITOR, "not started: declined by the StartMonitor plugin")
+	}
+	return nil
 }
 
 // waitStopped waits for stops to finish, but no longer than the stop timeout

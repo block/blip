@@ -349,8 +349,8 @@ func (m *Monitor) startup(stopChan chan struct{}) (err error) {
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
 
-	// Don't start subsystems if Stop was called. runLoop returns when startup
-	// does, and it stops the subsystems that startup started before Stop.
+	// Don't start subsystems if Stop was called. If Stop was called, runLoop
+	// returns after startup and stops what startup started.
 	select {
 	case <-stopChan:
 		return nil // runLoop stopped (Stop called)

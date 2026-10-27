@@ -5,13 +5,16 @@ package monitor
 import (
 	"database/sql"
 	"errors"
+	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/event"
+	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/status"
 	"github.com/cashapp/blip/v2/test/mock"
 )
@@ -102,5 +105,102 @@ func TestMonitorStopEvent(t *testing.T) {
 	}
 	if !strings.HasPrefix(stopped[0].Message, "stopped in ") {
 		t.Errorf("event message %q, expected stopped in <duration>", stopped[0].Message)
+	}
+}
+
+// stressDBFactory makes providers slowly and sometimes fails. It records a
+// violation if two makeDB calls overlap or if a provider is made while another
+// is still open, which happens only when two runLoops run at once.
+type stressDBFactory struct {
+	mux        sync.Mutex
+	rand       *rand.Rand
+	inFlight   atomic.Int32
+	open       atomic.Int32
+	opened     atomic.Int32
+	closed     atomic.Int32
+	violations atomic.Int32
+}
+
+func (f *stressDBFactory) Make(blip.ConfigMonitor) (*sql.DB, string, error) {
+	return nil, "", errors.New("no plans table") // plan loading fails and retries
+}
+
+func (f *stressDBFactory) MakeProvider(blip.ConfigMonitor) (blip.DbProvider, string, error) {
+	if f.inFlight.Add(1) > 1 || f.open.Load() != 0 {
+		f.violations.Add(1)
+	}
+	defer f.inFlight.Add(-1)
+	f.mux.Lock()
+	d := time.Duration(f.rand.Intn(30)) * time.Millisecond
+	fail := f.rand.Intn(3) == 0
+	f.mux.Unlock()
+	time.Sleep(d)
+	if fail {
+		return nil, "", errors.New("cannot make DB")
+	}
+	f.open.Add(1)
+	f.opened.Add(1)
+	return &stressDBProvider{f: f}, "stress", nil
+}
+
+type stressDBProvider struct {
+	f *stressDBFactory
+}
+
+func (p *stressDBProvider) Primary() *sql.DB { return &sql.DB{} }
+
+func (p *stressDBProvider) Close() error {
+	p.f.open.Add(-1)
+	p.f.closed.Add(1)
+	return nil
+}
+
+func TestMonitorConcurrentStartStop(t *testing.T) {
+	// Start and Stop from several goroutines at once. Stop must wait for
+	// runLoop to return, so that a later Start never runs a second runLoop
+	// while the first one is still making or holding database connections.
+	const monitorId = "concurrent-start-stop"
+	defer status.RemoveMonitor(monitorId)
+	f := &stressDBFactory{rand: rand.New(rand.NewSource(1))}
+	m := NewMonitor(MonitorArgs{
+		Config: blip.ConfigMonitor{
+			MonitorId: monitorId,
+			Plans:     blip.ConfigPlans{Table: "plans"},
+		},
+		DbMaker:    f,
+		PlanLoader: plan.NewLoader(nil),
+	})
+	m.retry.InitialInterval = time.Millisecond
+	m.retry.MaxInterval = 5 * time.Millisecond
+	m.retry.Reset()
+
+	const goroutines, ops = 4, 100
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		r := rand.New(rand.NewSource(int64(g)))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < ops; i++ {
+				if r.Intn(2) == 0 {
+					m.Start() // error if already running
+				} else {
+					m.Stop()
+				}
+				time.Sleep(time.Duration(r.Intn(2000)) * time.Microsecond)
+			}
+		}()
+	}
+	wg.Wait()
+	m.Stop()
+
+	if n := f.violations.Load(); n != 0 {
+		t.Errorf("%d makeDB calls overlapped another runLoop", n)
+	}
+	if f.opened.Load() == 0 {
+		t.Error("no database provider was made")
+	}
+	if opened, closed := f.opened.Load(), f.closed.Load(); opened != closed {
+		t.Errorf("%d database providers made, %d closed", opened, closed)
 	}
 }

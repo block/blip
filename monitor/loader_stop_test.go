@@ -377,6 +377,7 @@ func TestLoaderUnloadParallel(t *testing.T) {
 	assert.Less(t, parallel, n*stopDelay/4, "monitors not stopped in parallel")
 	assert.Equal(t, 0, st.eventCount(event.MONITOR_STOP_TIMEOUT, ""))
 }
+
 func TestLoaderConcurrentStartStopLoad(t *testing.T) {
 	// Hammer Load, StartMonitors, Start, and Stop concurrently (for the race
 	// detector), then check that the Loader's state converges: after a final
@@ -802,6 +803,7 @@ func TestLoaderStopCancelsPendingStartStatus(t *testing.T) {
 	assert.Equal(t, 1, st.preparedCount("cancel1"))
 	assert.Contains(t, monitorStatus(), "stopped at")
 }
+
 func TestLoaderPendingStartDeclinedOrPanics(t *testing.T) {
 	// A pending start runs when the stop it waits for finishes. If the
 	// StartMonitor plugin then declines it or panics, the monitor status says

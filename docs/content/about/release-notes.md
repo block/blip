@@ -58,7 +58,9 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 * Fixed the `repl.lag` collector's heartbeat reader, which kept running after its monitor stopped when `repl.lag` was collected at more than one level. It now stops when its monitor stops.
 * Changed the engine to call a collector's `Prepare` cleanup func when `Prepare` returns an error with a non-nil cleanup func, and to call the cleanup funcs of the collectors already prepared when a later collector in the plan fails. Previously they were not called, so resources started in `Prepare` leaked.
 * Fixed built-in sinks rejecting the retry options `buffer-size`, `send-timeout`, and `send-retry-wait`. Set these options in each built-in sink's options. The docs previously showed a separate `sinks.retry` section, which fails with "sink retry not registered".
-* Added validation of the retry options: `buffer-size` must be from 1 to 10000, and `send-timeout` and `send-retry-wait` must be greater than zero. Other values prevent the monitor from loading. Previously a built-in sink rejected any retry option, so no config that loaded before is affected.
+* Added validation of the retry options: `buffer-size` must be from 1 to 10000, `send-timeout` must be greater than zero and at most 1m, and `send-retry-wait` must be greater than zero. Other values prevent the monitor from loading. Previously a built-in sink rejected any retry option, so no config that loaded before is affected.
+* Changed the retry sink to stop waiting `send-retry-wait` between sends when `send-timeout` expires. Previously a send cycle could run past `send-timeout` by up to one `send-retry-wait`.
+* Added `sink.RetryArgs.Validate` and the `sink.MAX_RETRY_BUFFER_SIZE` and `sink.MAX_RETRY_SEND_TIMEOUT` constants. **Behavior change:** `sink.NewRetry` now panics when `Validate` returns an error: a `BufferSize` above 10000, a `SendTimeout` above 1m, or a negative `SendTimeout` or `SendRetryWait`. Custom sinks that build `RetryArgs` from user input should call `Validate` first.
 
 ### v2.1.0 (10 Aug 2026)
 

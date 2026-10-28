@@ -4,6 +4,7 @@ package sink
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -115,10 +116,11 @@ func TestFactoryMake_InvalidRetryOptions(t *testing.T) {
 		{"buffer-size", "ten"},
 		{"buffer-size", "-1"},
 		{"buffer-size", "0"},
-		{"buffer-size", "10001"},
+		{"buffer-size", strconv.Itoa(MAX_RETRY_BUFFER_SIZE + 1)},
 		{"send-timeout", "5"},
 		{"send-timeout", "-1s"},
 		{"send-timeout", "0s"},
+		{"send-timeout", (MAX_RETRY_SEND_TIMEOUT + time.Second).String()},
 		{"send-retry-wait", "fast"},
 		{"send-retry-wait", "-200ms"},
 		{"send-retry-wait", "0"},
@@ -135,11 +137,14 @@ func TestFactoryMake_InvalidRetryOptions(t *testing.T) {
 		})
 	}
 
-	// Max buffer-size is valid
+	// Maximum values are valid
 	_, err := Make(blip.SinkFactoryArgs{
 		SinkName:  "chronosphere",
 		MonitorId: "m1",
-		Options:   map[string]string{"buffer-size": "10000"},
+		Options: map[string]string{
+			"buffer-size":  strconv.Itoa(MAX_RETRY_BUFFER_SIZE),
+			"send-timeout": MAX_RETRY_SEND_TIMEOUT.String(),
+		},
 	})
 	require.NoError(t, err)
 }

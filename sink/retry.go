@@ -4,6 +4,7 @@ package sink
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,8 +19,10 @@ const (
 	DEFAULT_RETRY_SEND_TIMEOUT    = "5s"
 	DEFAULT_RETRY_SEND_RETRY_WAIT = "200ms"
 
-	// MAX_RETRY_BUFFER_SIZE is the maximum buffer-size sink option.
-	MAX_RETRY_BUFFER_SIZE = 10000
+	// Maximum RetryArgs values. MAX_RETRY_SEND_TIMEOUT bounds how long Send
+	// can block its caller.
+	MAX_RETRY_BUFFER_SIZE  = 10000
+	MAX_RETRY_SEND_TIMEOUT = time.Minute
 )
 
 // Retry is a pseudo-sink that provides buffering, serialization, and retry for
@@ -87,6 +90,25 @@ type RetryArgs struct {
 	SendRetryWait time.Duration // optional; DEFAULT_RETRY_SEND_RETRY_WAIT
 }
 
+// Validate returns an error if an optional value is out of range. Zero values
+// are valid and mean the default. Errors are prefixed with the sink option
+// name of the invalid value. NewRetry panics if Validate returns an error.
+func (a RetryArgs) Validate() error {
+	if a.BufferSize > MAX_RETRY_BUFFER_SIZE {
+		return fmt.Errorf("buffer-size: %d: must be at most %d", a.BufferSize, MAX_RETRY_BUFFER_SIZE)
+	}
+	if a.SendTimeout < 0 {
+		return fmt.Errorf("send-timeout: %s: must not be negative", a.SendTimeout)
+	}
+	if a.SendTimeout > MAX_RETRY_SEND_TIMEOUT {
+		return fmt.Errorf("send-timeout: %s: must be at most %s", a.SendTimeout, MAX_RETRY_SEND_TIMEOUT)
+	}
+	if a.SendRetryWait < 0 {
+		return fmt.Errorf("send-retry-wait: %s: must not be negative", a.SendRetryWait)
+	}
+	return nil
+}
+
 func NewRetry(args RetryArgs) *Retry {
 	// Panic if caller doesn't provide required args
 	if args.MonitorId == "" {
@@ -98,6 +120,9 @@ func NewRetry(args RetryArgs) *Retry {
 
 	if _, ok := args.Sink.(*Delta); ok {
 		panic("RetryArgs.Sink cannot be a Delta sink.")
+	}
+	if err := args.Validate(); err != nil {
+		panic("invalid RetryArgs: " + err.Error())
 	}
 
 	// Set defaults
@@ -182,9 +207,16 @@ func (rb *Retry) Send(ctx context.Context, m *blip.Metrics) error {
 		default:
 		}
 
-		// Throttle between send, except on first send
+		// Throttle between send, except on first send. Stop waiting when
+		// either context is cancelled, so Send doesn't overrun sendTimeout.
 		if n > 0 {
-			time.Sleep(rb.retryWait)
+			t := time.NewTimer(rb.retryWait)
+			select {
+			case <-ctx2.Done():
+				t.Stop()
+				return nil
+			case <-t.C:
+			}
 		}
 		n += 1
 

@@ -156,6 +156,61 @@ func TestRetry_SendTimeoutBoundsInFlightSend(t *testing.T) {
 	}
 }
 
+func TestRetry_SendTimeoutBoundsRetryWait(t *testing.T) {
+	// Real sink always fails, so Send waits send-retry-wait before retrying
+	failingSink := mock.Sink{
+		SendFunc: func(ctx context.Context, m *blip.Metrics) error {
+			return fmt.Errorf("send failed")
+		},
+	}
+	rb := NewRetry(RetryArgs{
+		MonitorId:     "m1",
+		Sink:          failingSink,
+		BufferSize:    3,
+		SendTimeout:   200 * time.Millisecond,
+		SendRetryWait: time.Minute,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		rb.Send(context.Background(), &blip.Metrics{Level: "1"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Retry.Send stalled: SendTimeout did not bound the retry wait")
+	}
+	assert.Equal(t, []string{"1", "", ""}, stack(rb))
+}
+
+func TestRetryArgsValidate(t *testing.T) {
+	sink := mock.Sink{}
+	valid := []RetryArgs{
+		{}, // defaults
+		{BufferSize: MAX_RETRY_BUFFER_SIZE, SendTimeout: MAX_RETRY_SEND_TIMEOUT, SendRetryWait: time.Hour},
+	}
+	for _, args := range valid {
+		assert.NoError(t, args.Validate(), "%+v", args)
+	}
+
+	invalid := []RetryArgs{
+		{BufferSize: MAX_RETRY_BUFFER_SIZE + 1},
+		{SendTimeout: -time.Second},
+		{SendTimeout: MAX_RETRY_SEND_TIMEOUT + time.Second},
+		{SendRetryWait: -time.Second},
+	}
+	for _, args := range invalid {
+		assert.Error(t, args.Validate(), "%+v", args)
+
+		// NewRetry panics on invalid args
+		args.MonitorId = "m1"
+		args.Sink = sink
+		assert.Panics(t, func() { NewRetry(args) }, "%+v", args)
+	}
+}
+
 func TestRetryPopMiddle(t *testing.T) {
 	// Test that popping values from the middle of the stack works. This happens
 	// when, in this test for example, while sending metrics1, two more metrics

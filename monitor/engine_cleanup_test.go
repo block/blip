@@ -19,7 +19,7 @@ func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 	// Engine.Prepare only pings the database, and the repl.lag blip writer
 	// doesn't query it, so MySQL isn't needed
 	db := mock.PingDB()
-	defer db.Close()
+	t.Cleanup(func() { db.Close() }) // after the engines stop: cleanups run last-in, first-out
 
 	// repl.lag at two levels, like a plan where the slow level inherits
 	// domains from the fast level
@@ -41,6 +41,7 @@ func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 	readers.Label()
 	for i := 0; i < 3; i++ {
 		engine := NewEngine(blip.ConfigMonitor{MonitorId: plan.MonitorId}, db)
+		t.Cleanup(engine.Stop) // if the test fails before Stop; a second Stop is a no-op
 		if err := engine.Prepare(context.Background(), plan, func() {}, func() {}); err != nil {
 			t.Fatal(err)
 		}

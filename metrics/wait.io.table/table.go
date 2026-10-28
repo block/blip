@@ -93,8 +93,9 @@ type tableOptions struct {
 }
 
 // skipTruncate tells the truncate error policy that the table was not
-// truncated because reading it failed. Without it, the next sample would cover
-// more than one interval but be reported as a one-interval delta.
+// truncated because reading it (collectQuery) failed. Without it, the next
+// sample would cover more than one interval but be reported as a one-interval
+// delta.
 func (o *tableOptions) skipTruncate() {
 	if o.truncate {
 		o.truncateErrPolicy.SkipTruncate()
@@ -267,6 +268,7 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 
 	metrics, err := t.collectQuery(ctx, o.query, o.params, o.metricType, o.schema)
 	if err != nil {
+		o.skipTruncate()
 		return nil, err
 	}
 
@@ -293,7 +295,6 @@ func (t *Table) Collect(ctx context.Context, levelName string) ([]blip.MetricVal
 func (t *Table) collectQuery(ctx context.Context, query string, params []interface{}, metricType byte, schema bool) ([]blip.MetricValue, error) {
 	rows, err := t.db.QueryContext(ctx, query, params...)
 	if err != nil {
-		o.skipTruncate()
 		return nil, err
 	}
 	defer rows.Close()
@@ -307,7 +308,6 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 
 	cols, err := rows.Columns()
 	if err != nil {
-		o.skipTruncate()
 		return nil, fmt.Errorf("Failed to get columns for wait.io.table: %w", err)
 	}
 
@@ -327,7 +327,6 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 
 	for rows.Next() {
 		if err = rows.Scan(values...); err != nil {
-			o.skipTruncate()
 			return nil, err
 		}
 
@@ -354,9 +353,8 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 
 	}
 	if err := rows.Err(); err != nil {
-		o.skipTruncate()
 		return nil, fmt.Errorf("Failed to read rows for wait.io.table: %w", err)
 	}
 
-	return metrics, rows.Err()
+	return metrics, nil
 }

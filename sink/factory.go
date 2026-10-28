@@ -5,6 +5,7 @@ package sink
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -109,60 +110,62 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 	// Built-in sinks use Retry to serialize access and retry on Send error.
 	// First build the specific sink, then return it wrapped in Retry.
 
-	// Parse retry options
+	// Parse retry options. Retry options are consumed here, so delete them
+	// from the options passed to the specific sink, which rejects unknown options.
 	retryArgs := RetryArgs{
 		MonitorId: args.MonitorId,
 	}
-	if v, ok := args.Options["buffer-size"]; ok {
-		n, err := strconv.Atoi(v)
+	// Parse in a fixed order, not map order, so the same invalid options always
+	// return the same error.
+	sinkOpts := maps.Clone(args.Options)
+	for _, k := range []string{"buffer-size", "send-timeout", "send-retry-wait"} {
+		v, ok := sinkOpts[k]
+		if !ok {
+			continue
+		}
+		var err error
+		switch k {
+		case "buffer-size":
+			retryArgs.BufferSize, err = parseRetryBufferSize(v)
+		case "send-timeout":
+			retryArgs.SendTimeout, err = parseRetryDuration(v)
+		case "send-retry-wait":
+			retryArgs.SendRetryWait, err = parseRetryDuration(v)
+		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid %s sink option %s: %w", args.SinkName, k, err)
 		}
-		if n < 0 {
-			return nil, fmt.Errorf("invalid retry buffer-size: %d: must be greater than zero", n)
-		}
-		retryArgs.BufferSize = uint(n)
+		delete(sinkOpts, k)
 	}
-	if v, ok := args.Options["send-timeout"]; ok {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, err
-		}
-		retryArgs.SendTimeout = d
-	}
-	if v, ok := args.Options["send-retry-wait"]; ok {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, err
-		}
-		retryArgs.SendRetryWait = d
+	if err := retryArgs.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid %s sink option %w", args.SinkName, err)
 	}
 
 	// Make specific built-in sink
 	var err error
 	switch args.SinkName {
 	case "chronosphere":
-		retryArgs.Sink, err = NewChronosphere(args.MonitorId, args.Options, args.Tags)
+		retryArgs.Sink, err = NewChronosphere(args.MonitorId, sinkOpts, args.Tags)
 	case "signalfx":
-		httpClient, err := f.HTTPClient.MakeForSink("signalfx", args.MonitorId, args.Options, args.Tags)
+		httpClient, err := f.HTTPClient.MakeForSink("signalfx", args.MonitorId, sinkOpts, args.Tags)
 		if err != nil {
 			return nil, err
 		}
-		retryArgs.Sink, err = NewSignalFx(args.MonitorId, args.Options, args.Tags, httpClient)
+		retryArgs.Sink, err = NewSignalFx(args.MonitorId, sinkOpts, args.Tags, httpClient)
 		if err != nil {
 			return nil, err
 		}
 	case "datadog":
-		httpClient, err := f.HTTPClient.MakeForSink("datadog", args.MonitorId, args.Options, args.Tags)
+		httpClient, err := f.HTTPClient.MakeForSink("datadog", args.MonitorId, sinkOpts, args.Tags)
 		if err != nil {
 			return nil, err
 		}
-		retryArgs.Sink, err = NewDatadog(args.MonitorId, args.Options, args.Tags, httpClient)
+		retryArgs.Sink, err = NewDatadog(args.MonitorId, sinkOpts, args.Tags, httpClient)
 		if err != nil {
 			return nil, err
 		}
 	case "prom-pushgateway":
-		retryArgs.Sink, err = NewPromPushgateway(args.MonitorId, args.Options, args.Tags)
+		retryArgs.Sink, err = NewPromPushgateway(args.MonitorId, sinkOpts, args.Tags)
 	default:
 		return nil, fmt.Errorf("sink %s not registered", args.SinkName)
 	}
@@ -179,4 +182,30 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 	default:
 		return NewRetry(retryArgs), nil
 	}
+}
+
+// parseRetryBufferSize parses a buffer-size option, which must be greater than
+// zero. RetryArgs.Validate checks the maximum.
+func parseRetryBufferSize(v string) (uint, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%d: must be greater than zero", n)
+	}
+	return uint(n), nil
+}
+
+// parseRetryDuration parses a send-timeout or send-retry-wait option, which must
+// be greater than zero. RetryArgs.Validate checks the maximum.
+func parseRetryDuration(v string) (time.Duration, error) {
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s: must be greater than zero", v)
+	}
+	return d, nil
 }

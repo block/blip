@@ -4,6 +4,7 @@ package sink
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,11 +18,16 @@ const (
 	DEFAULT_RETRY_BUFFER_SIZE     = 60
 	DEFAULT_RETRY_SEND_TIMEOUT    = "5s"
 	DEFAULT_RETRY_SEND_RETRY_WAIT = "200ms"
+
+	// Maximum RetryArgs values. MAX_RETRY_SEND_TIMEOUT bounds how long Send
+	// can block its caller.
+	MAX_RETRY_BUFFER_SIZE  = 10000
+	MAX_RETRY_SEND_TIMEOUT = time.Minute
 )
 
 // Retry is a pseudo-sink that provides buffering, serialization, and retry for
-// a real sink. The built-in sinks, except "log", use Retry to handle those three
-// complexities.
+// a real sink. The built-in sinks, except "log" and "noop", use Retry to handle
+// those three complexities.
 //
 // Retry uses a LIFO queue (a stack) to prioritize sending the latest metrics.
 // This means that, during a long outage of the real sink, Retry drops the oldest
@@ -76,6 +82,9 @@ type retryItem struct {
 	checkpoint any
 }
 
+// RetryArgs are the arguments for NewRetry. NewRetry doesn't check the ranges
+// of the optional values, so callers that build RetryArgs from user input, like
+// sink options, should call Validate first.
 type RetryArgs struct {
 	MonitorId     string        // required
 	Sink          blip.Sink     // required
@@ -84,6 +93,27 @@ type RetryArgs struct {
 	SendRetryWait time.Duration // optional; DEFAULT_RETRY_SEND_RETRY_WAIT
 }
 
+// Validate returns an error if an optional value is out of range. Zero values
+// are valid and mean the default. Errors are prefixed with the sink option
+// name of the invalid value.
+func (a RetryArgs) Validate() error {
+	if a.BufferSize > MAX_RETRY_BUFFER_SIZE {
+		return fmt.Errorf("buffer-size: %d: must be at most %d", a.BufferSize, MAX_RETRY_BUFFER_SIZE)
+	}
+	if a.SendTimeout < 0 {
+		return fmt.Errorf("send-timeout: %s: must not be negative", a.SendTimeout)
+	}
+	if a.SendTimeout > MAX_RETRY_SEND_TIMEOUT {
+		return fmt.Errorf("send-timeout: %s: must be at most %s", a.SendTimeout, MAX_RETRY_SEND_TIMEOUT)
+	}
+	if a.SendRetryWait < 0 {
+		return fmt.Errorf("send-retry-wait: %s: must not be negative", a.SendRetryWait)
+	}
+	return nil
+}
+
+// NewRetry returns a Retry sink. It panics if a required arg is missing or
+// invalid. It doesn't check optional values; see RetryArgs.Validate.
 func NewRetry(args RetryArgs) *Retry {
 	// Panic if caller doesn't provide required args
 	if args.MonitorId == "" {
@@ -179,9 +209,16 @@ func (rb *Retry) Send(ctx context.Context, m *blip.Metrics) error {
 		default:
 		}
 
-		// Throttle between send, except on first send
+		// Throttle between send, except on first send. Stop waiting when
+		// either context is cancelled, so Send doesn't overrun sendTimeout.
 		if n > 0 {
-			time.Sleep(rb.retryWait)
+			t := time.NewTimer(rb.retryWait)
+			select {
+			case <-ctx2.Done():
+				t.Stop()
+				return nil
+			case <-t.C:
+			}
 		}
 		n += 1
 

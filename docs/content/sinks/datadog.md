@@ -28,6 +28,8 @@ Starting from v1.1, this sink now sends delta values to Datadog for counter metr
 
 If you wish to track the difference in counter values since v1.1, you can tag metrics with the blip version.
 
+This sink also accepts the [retry]({{< ref "retry" >}}) options `buffer-size`, `send-timeout`, and `send-retry-wait`.
+
 ## Quick Reference
 
 ```yaml

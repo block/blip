@@ -13,6 +13,8 @@ It uses Prometheus domain translation, so it only works with [compatible domains
 Currently, this sink is intended to work with [Vector by Datadog](https://vector.dev/).
 Therefore, it uses only `POST` and the text (exposition) protocol; it does not use RPC with protos.
 
+This sink also accepts the [retry]({{< ref "retry" >}}) options `buffer-size`, `send-timeout`, and `send-retry-wait`.
+
 ## Quick Reference
 
 ```yaml

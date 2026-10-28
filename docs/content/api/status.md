@@ -71,7 +71,7 @@ The unprefixed counters count only level collector collections.
 Metrics lost when a sink or `TransformMetrics` panics (event `lco-receiver-panic`) are not counted.
 
 When the host running Blip is CPU-starved, the `engine-*` and `level-ticks-dropped` counters increase first.
-Collectors then run out of time too, so `collector-timeouts` rises almost one for one with `engine-emr-timeouts`: in a benchmark limited to 0.5 CPU, 46,090 collector timeouts against 46,802 EMR timeouts.
+Collectors then run out of time too, so `collector-timeouts` rises almost one for one with `engine-emr-timeouts`.
 `level-ticks-dropped` increases only when the level collector itself falls behind, so it's the counter to watch for CPU starvation.
 When a sink is slow or unavailable, `sink-retry-dropped` and then `level-metrics-dropped` increase.
 

@@ -13,13 +13,15 @@ import (
 	"github.com/cashapp/blip/v2/test/mock"
 )
 
-func TestCollectReturnsDeadlineExceededReadingRows(t *testing.T) {
+func TestCollectReturnsDeadlineExceeded(t *testing.T) {
 	tests := []struct {
 		name     string
 		truncate bool
+		timeout  time.Duration
 	}{
-		{"truncate", true},
-		{"no truncate", false},
+		{"truncate, query", true, -1},                        // CMR reached before the query
+		{"truncate, read rows", true, 50 * time.Millisecond}, // CMR reached while reading rows
+		{"no truncate, read rows", false, 50 * time.Millisecond},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -38,8 +40,7 @@ func TestCollectReturnsDeadlineExceededReadingRows(t *testing.T) {
 			c := NewTable(db)
 			c.options["kpi"] = o
 
-			// CMR reached while reading rows
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), tt.timeout)
 			defer cancel()
 			metrics, err := c.Collect(ctx, "kpi")
 			if !errors.Is(err, context.DeadlineExceeded) {

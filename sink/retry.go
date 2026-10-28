@@ -26,8 +26,8 @@ const (
 )
 
 // Retry is a pseudo-sink that provides buffering, serialization, and retry for
-// a real sink. The built-in sinks, except "log", use Retry to handle those three
-// complexities.
+// a real sink. The built-in sinks, except "log" and "noop", use Retry to handle
+// those three complexities.
 //
 // Retry uses a LIFO queue (a stack) to prioritize sending the latest metrics.
 // This means that, during a long outage of the real sink, Retry drops the oldest
@@ -82,6 +82,9 @@ type retryItem struct {
 	checkpoint any
 }
 
+// RetryArgs are the arguments for NewRetry. NewRetry doesn't check the ranges
+// of the optional values, so callers that build RetryArgs from user input, like
+// sink options, should call Validate first.
 type RetryArgs struct {
 	MonitorId     string        // required
 	Sink          blip.Sink     // required
@@ -92,7 +95,7 @@ type RetryArgs struct {
 
 // Validate returns an error if an optional value is out of range. Zero values
 // are valid and mean the default. Errors are prefixed with the sink option
-// name of the invalid value. NewRetry panics if Validate returns an error.
+// name of the invalid value.
 func (a RetryArgs) Validate() error {
 	if a.BufferSize > MAX_RETRY_BUFFER_SIZE {
 		return fmt.Errorf("buffer-size: %d: must be at most %d", a.BufferSize, MAX_RETRY_BUFFER_SIZE)
@@ -109,6 +112,8 @@ func (a RetryArgs) Validate() error {
 	return nil
 }
 
+// NewRetry returns a Retry sink. It panics if a required arg is missing or
+// invalid. It doesn't check optional values; see RetryArgs.Validate.
 func NewRetry(args RetryArgs) *Retry {
 	// Panic if caller doesn't provide required args
 	if args.MonitorId == "" {
@@ -120,9 +125,6 @@ func NewRetry(args RetryArgs) *Retry {
 
 	if _, ok := args.Sink.(*Delta); ok {
 		panic("RetryArgs.Sink cannot be a Delta sink.")
-	}
-	if err := args.Validate(); err != nil {
-		panic("invalid RetryArgs: " + err.Error())
 	}
 
 	// Set defaults

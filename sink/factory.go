@@ -115,8 +115,14 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 	retryArgs := RetryArgs{
 		MonitorId: args.MonitorId,
 	}
+	// Parse in a fixed order, not map order, so the same invalid options always
+	// return the same error.
 	sinkOpts := maps.Clone(args.Options)
-	for k, v := range args.Options {
+	for _, k := range []string{"buffer-size", "send-timeout", "send-retry-wait"} {
+		v, ok := sinkOpts[k]
+		if !ok {
+			continue
+		}
 		var err error
 		switch k {
 		case "buffer-size":
@@ -125,8 +131,6 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 			retryArgs.SendTimeout, err = parseRetryDuration(v)
 		case "send-retry-wait":
 			retryArgs.SendRetryWait, err = parseRetryDuration(v)
-		default:
-			continue // specific sink option
 		}
 		if err != nil {
 			return nil, fmt.Errorf("invalid %s sink option %s: %w", args.SinkName, k, err)

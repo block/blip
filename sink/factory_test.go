@@ -137,6 +137,22 @@ func TestFactoryMake_InvalidRetryOptions(t *testing.T) {
 		})
 	}
 
+	// With more than one invalid option, the error is always for the first
+	// option in parse order: buffer-size, send-timeout, send-retry-wait
+	for i := 0; i < 20; i++ {
+		_, err := Make(blip.SinkFactoryArgs{
+			SinkName:  "chronosphere",
+			MonitorId: "m1",
+			Options: map[string]string{
+				"send-retry-wait": "fast",
+				"send-timeout":    "5",
+				"buffer-size":     "ten",
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid chronosphere sink option buffer-size: ")
+	}
+
 	// Maximum values are valid
 	_, err := Make(blip.SinkFactoryArgs{
 		SinkName:  "chronosphere",

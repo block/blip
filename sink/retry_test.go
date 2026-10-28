@@ -204,10 +204,10 @@ func TestRetryArgsValidate(t *testing.T) {
 	for _, args := range invalid {
 		assert.Error(t, args.Validate(), "%+v", args)
 
-		// NewRetry panics on invalid args
+		// NewRetry doesn't validate, so existing callers keep working
 		args.MonitorId = "m1"
 		args.Sink = sink
-		assert.Panics(t, func() { NewRetry(args) }, "%+v", args)
+		assert.NotPanics(t, func() { NewRetry(args) }, "%+v", args)
 	}
 }
 

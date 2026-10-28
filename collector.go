@@ -21,9 +21,11 @@ type Collector interface {
 
 	// Prepare prepares a plan for future calls to Collect. The return function
 	// is called once when the collector is destroyed; it allows the collector
-	// to clean up. If Prepare returns an error, Blip will retry preparing the
-	// plan. Therefore, Prepare should not retry on error (for example, if the
-	// database is not online yet).
+	// to clean up. It's also called if Prepare returns an error with a non-nil
+	// function, and if a later collector in the plan fails to prepare, because
+	// then the engine discards the collectors it already prepared. If Prepare
+	// returns an error, Blip will retry preparing the plan. Therefore, Prepare
+	// should not retry on error (for example, if the database is not online yet).
 	Prepare(ctx context.Context, plan Plan) (func(), error)
 
 	// Collect collects metrics for the previously prepared plan. Collect is only

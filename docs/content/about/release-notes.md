@@ -42,6 +42,8 @@ Default sink HTTP clients now have a 10-second whole-request timeout plus bounde
 * Added per-monitor fault counters, such as collector panics and timeouts, engine max runtime (EMR) timeouts, and dropped metrics, reported by the new [`GET /status/monitors/counters`]({{< ref "/api/status#get-statusmonitorscounters" >}}) API endpoint. Integrations can read them with the new `status.ReportCounters`, and register their own with `status.Counter`; the counter names are `status` constants like `status.COLLECTOR_PANICS`.
 * Added the optional `sink.CounterSink` interface for sinks that report monitor status counters; the monitor calls `RegisterCounters` each time it starts. A custom sink that wraps `sink.Retry` must forward `RegisterCounters` to it, else the retry buffer's `sink-retry-dropped` counter isn't reported.
 * Fixed the `engine-emr-timeout` event, which was defined but never sent. It's now sent once for each collection, or exporter scrape, that reaches the engine max runtime, so event receivers get one per EMR timeout.
+* Fixed the `repl.lag` collector's heartbeat reader, which kept running after its monitor stopped when `repl.lag` was collected at more than one level. It now stops when its monitor stops.
+* Changed the engine to call a collector's `Prepare` cleanup func when `Prepare` returns an error with a non-nil cleanup func, and to call the cleanup funcs of the collectors already prepared when a later collector in the plan fails. Previously they were not called, so resources started in `Prepare` leaked.
 
 ### v2.1.0 (10 Aug 2026)
 

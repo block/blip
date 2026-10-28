@@ -5,6 +5,7 @@ package repllag
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/test"
+	"github.com/cashapp/blip/v2/test/mock"
 )
 
 func TestPrepareForSingleLevelAndNoSourceOnMySQL80(t *testing.T) {
@@ -200,5 +202,24 @@ func TestPrepareBlipErrorStopsReader(t *testing.T) {
 	}
 	if got := test.WaitGoroutines(readerFunc, 0, readerTimeout); got != 0 {
 		t.Errorf("%d heartbeat readers running after Prepare error, expected 0", got)
+	}
+}
+
+func TestCollectPFSReturnsDeadlineExceeded(t *testing.T) {
+	// Only the replica check query uses the collect context, so set the
+	// repl-check option to run it. The lag query uses context.Background(),
+	// so the CMR doesn't stop it.
+	db := mock.ContextDB()
+	defer db.Close()
+
+	c := NewLag(db)
+	c.lagWriterIn["kpi"] = LAG_WRITER_PFS
+	c.replCheck = "server_id"
+
+	ctx, cancel := context.WithTimeout(context.Background(), -1) // CMR already reached
+	defer cancel()
+	_, err := c.Collect(ctx, "kpi")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Collect returned error %v, expected an error wrapping context.DeadlineExceeded", err)
 	}
 }

@@ -33,16 +33,20 @@ func (p *TruncateErrorPolicy) TruncateError(err error, stop *bool, collectedMetr
 	// Stop trying to collect if error policy retry="stop". This affects
 	// future calls to Collect; don't return yet because we need to check
 	// the metric policy: drop or zero. If zero, we must report one zero val.
-	if p.Policy.Retry == POLICY_RETRY_NO {
+	// Only a truncate error stops, not the first truncate after SkipTruncate.
+	if err != nil && p.Policy.Retry == POLICY_RETRY_NO {
 		*stop = true
 	}
 
-	// Report
+	// Report. Only count a truncate error: a successful truncate after a
+	// skipped one must not use up the report-once report.
 	var reportedErr error
-	if p.Policy.ReportError() {
-		reportedErr = err
-	} else {
-		blip.Debug("error policy=ignore: %v", err)
+	if err != nil {
+		if p.Policy.ReportError() {
+			reportedErr = err
+		} else {
+			blip.Debug("error policy=ignore: %v", err)
+		}
 	}
 
 	// We may need to change the resulting metric values depending on if we had an error with truncation or not.
@@ -71,4 +75,12 @@ func (p *TruncateErrorPolicy) TruncateError(err error, stop *bool, collectedMetr
 	}
 
 	return metrics, reportedErr
+}
+
+// SkipTruncate records that the table was not truncated this interval, for
+// example because reading it failed. The next sample then covers more than one
+// interval, so the next call to TruncateError applies the metric policy (drop
+// or zero) to it, as it does after a truncate error.
+func (p *TruncateErrorPolicy) SkipTruncate() {
+	p.hadTruncateError = true
 }

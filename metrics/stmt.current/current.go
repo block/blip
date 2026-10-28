@@ -126,7 +126,7 @@ func (c *Current) Collect(ctx context.Context, levelName string) ([]blip.MetricV
 
 	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("%s failed: %s", query, err)
+		return nil, fmt.Errorf("%s failed: %w", query, err)
 	}
 	defer rows.Close()
 
@@ -134,9 +134,12 @@ func (c *Current) Collect(ctx context.Context, levelName string) ([]blip.MetricV
 	for rows.Next() {
 		var time float64
 		if err := rows.Scan(&time); err != nil {
-			return nil, fmt.Errorf("%s failed: %s", query, err)
+			return nil, fmt.Errorf("%s failed: %w", query, err)
 		}
 		times = append(times, time/1e6) // picoseconds to microseconds
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s failed: %w", query, err)
 	}
 
 	sort.Float64s(times)

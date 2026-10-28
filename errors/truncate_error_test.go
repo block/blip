@@ -211,3 +211,87 @@ func TestTruncateErrorZeroStopIgnore(t *testing.T) {
 		t.Errorf("Expected no error but got: %v", err)
 	}
 }
+
+func TestTruncateErrorSkipTruncate(t *testing.T) {
+	t.Parallel()
+	collectedMetrics := []blip.MetricValue{
+		{
+			Name:  "Metric1",
+			Type:  blip.DELTA_COUNTER,
+			Value: 2.0,
+		},
+	}
+	zeroMetrics := []blip.MetricValue{
+		{
+			Name:  "Metric1",
+			Type:  blip.DELTA_COUNTER,
+			Value: 0.0,
+		},
+	}
+
+	tests := []struct {
+		policy  string
+		metrics []blip.MetricValue // first sample after SkipTruncate
+	}{
+		{"report,drop,stop", nil},
+		{"report,zero,stop", zeroMetrics},
+	}
+	for _, tt := range tests {
+		t.Run(tt.policy, func(t *testing.T) {
+			stopValue := false
+			truncatePolicy := errors.NewTruncateErrorPolicy(tt.policy)
+			truncatePolicy.SkipTruncate()
+
+			// The first sample after a skipped truncate covers more than one
+			// interval, so the metric policy applies to it
+			returnedMetrics, err := truncatePolicy.TruncateError(nil, &stopValue, collectedMetrics)
+			if err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+			if stopValue {
+				t.Errorf("Stop value should be false but it is true")
+			}
+			if diff := deep.Equal(tt.metrics, returnedMetrics); diff != nil {
+				t.Error(diff)
+			}
+
+			// The next sample covers one interval again
+			returnedMetrics, err = truncatePolicy.TruncateError(nil, &stopValue, collectedMetrics)
+			if err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+			if diff := deep.Equal(collectedMetrics, returnedMetrics); diff != nil {
+				t.Error(diff)
+			}
+		})
+	}
+}
+
+func TestTruncateErrorSkipTruncateReportOnce(t *testing.T) {
+	t.Parallel()
+	collectedMetrics := []blip.MetricValue{
+		{
+			Name:  "Metric1",
+			Type:  blip.DELTA_COUNTER,
+			Value: 2.0,
+		},
+	}
+
+	testErr := fmt.Errorf(TRUNCATE_ERR_STR)
+	stopValue := false
+	truncatePolicy := errors.NewTruncateErrorPolicy("report-once,drop,retry")
+	truncatePolicy.SkipTruncate()
+
+	// Successful truncate after a skipped one: nothing to report
+	if _, err := truncatePolicy.TruncateError(nil, &stopValue, collectedMetrics); err != nil {
+		t.Errorf("Expected no error but got: %v", err)
+	}
+
+	// The first truncate error is still reported once
+	if _, err := truncatePolicy.TruncateError(testErr, &stopValue, collectedMetrics); err != testErr {
+		t.Errorf("Expected error %v but got: %v", testErr, err)
+	}
+	if _, err := truncatePolicy.TruncateError(testErr, &stopValue, collectedMetrics); err != nil {
+		t.Errorf("Expected no error after report-once but got: %v", err)
+	}
+}

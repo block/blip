@@ -190,10 +190,9 @@ func TestPrepareBlipAtMultipleLevelsReturnsReaderCleanup(t *testing.T) {
 	// inherit domains from lower levels. Prepare starts one reader for all
 	// levels, so it must return the cleanup func that stops that reader.
 	c := NewLag(unreachableDB(t))
-	var cleanup func()
-	var err error
 	readers := test.NewGoroutines()
-	readers.Do(func() { cleanup, err = c.Prepare(context.Background(), blipPlan("fast", "medium", "slow")) })
+	readers.Label()
+	cleanup, err := c.Prepare(context.Background(), blipPlan("fast", "medium", "slow"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,9 +215,9 @@ func TestPrepareBlipErrorStopsReader(t *testing.T) {
 	spyOnReader(c)
 	plan := blipPlan("kpi")
 	plan.Levels["kpi"].Collect[DOMAIN].Options[OPT_REPL_CHECK] = "read_only"
-	var err error
 	readers := test.NewGoroutines()
-	readers.Do(func() { _, err = c.Prepare(context.Background(), plan) })
+	readers.Label()
+	_, err := c.Prepare(context.Background(), plan)
 	if err == nil {
 		t.Fatal("Prepare returned nil error, expected repl check error")
 	}
@@ -269,11 +268,10 @@ func TestPrepareBlipAtMultipleLevelsDropsNoHeartbeat(t *testing.T) {
 					level.Collect[DOMAIN].Options[OPT_REPORT_NO_HEARTBEAT] = report
 				}
 			}
-			var cleanup func()
-			var err error
 			readers := test.NewGoroutines()
-			readers.Do(func() { cleanup, err = c.Prepare(context.Background(), plan) })
-			stopReader(t, cleanup)
+			readers.Label()
+			cleanup, err := c.Prepare(context.Background(), plan)
+			stopReader(t, cleanup) // backstop if the test fails before it stops the reader
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -292,6 +290,10 @@ func TestPrepareBlipAtMultipleLevelsDropsNoHeartbeat(t *testing.T) {
 				} else if len(metrics) != 0 {
 					t.Errorf("%s: got %+v, expected no metrics (dropped)", level, metrics)
 				}
+			}
+			cleanup() // stopReader calls it again, which is a no-op
+			if got := readers.Wait(test.HeartbeatReaderFunc, 0, test.HeartbeatReaderTimeout); got != 0 {
+				t.Errorf("%d heartbeat readers running after cleanup, expected 0", got)
 			}
 		})
 	}

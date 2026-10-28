@@ -18,10 +18,7 @@ import (
 func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 	// Engine.Prepare only pings the database, and the repl.lag blip writer
 	// doesn't query it, so MySQL isn't needed
-	db, err := test.PingDB()
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := mock.PingDB()
 	defer db.Close()
 
 	// repl.lag at two levels, like a plan where the slow level inherits
@@ -41,10 +38,10 @@ func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 
 	// Count only readers started by this test
 	readers := test.NewGoroutines()
+	readers.Label()
 	for i := 0; i < 3; i++ {
 		engine := NewEngine(blip.ConfigMonitor{MonitorId: plan.MonitorId}, db)
-		readers.Do(func() { err = engine.Prepare(context.Background(), plan, func() {}, func() {}) })
-		if err != nil {
+		if err := engine.Prepare(context.Background(), plan, func() {}, func() {}); err != nil {
 			t.Fatal(err)
 		}
 		if got := readers.Wait(test.HeartbeatReaderFunc, 1, test.HeartbeatReaderTimeout); got != 1 {
@@ -60,10 +57,7 @@ func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 func TestEnginePrepareErrorCleansUpPreparedCollectors(t *testing.T) {
 	// Engine.Prepare only pings the database, and the mock collectors don't
 	// query it, so MySQL isn't needed
-	db, err := test.PingDB()
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := mock.PingDB()
 	defer db.Close()
 
 	// Two collectors. Domains are prepared in random order, so whichever is

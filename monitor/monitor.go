@@ -21,6 +21,7 @@ import (
 	"github.com/cashapp/blip/v2/event"
 	"github.com/cashapp/blip/v2/ha"
 	"github.com/cashapp/blip/v2/heartbeat"
+	"github.com/cashapp/blip/v2/internal/stopchan"
 	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/prom"
 	"github.com/cashapp/blip/v2/sink"
@@ -236,7 +237,7 @@ func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 
 		m.setErr(err, false)
 		if err != nil {
-			if !sleep(stopChan, m.retry.NextBackOff()) {
+			if !stopchan.Sleep(stopChan, m.retry.NextBackOff()) {
 				return
 			}
 			continue
@@ -245,8 +246,9 @@ func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 		// Monitor is running. Wait for either Stop (which closes m.runLoopChan)
 		// or one of the monitor subsystems to return/panic (which closes m.runChan).
 		// On Stop, return immediately: user is stopping the monitor completely.
-		// On m.runChan close (via stop func), we restart almost immediately because
-		// Blip never stops trying to send metrics.
+		// On m.runChan close (via stop func), we restart almost immediately to
+		// resume collecting metrics. Like a stop, the restart drops the collection
+		// in progress and metrics not yet sent to sinks (see lco.Run).
 		m.retry.Reset()
 		status.Monitor(m.monitorId, status.MONITOR, "running since %s", blip.FormatTime(time.Now()))
 		select {
@@ -254,23 +256,10 @@ func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
 			return
 		case <-runChan: // internal failure
 			blip.Debug("%s: runChan closed; restarting", m.monitorId)
-			if !sleep(stopChan, 1*time.Second) { // between monitor restarts
+			if !stopchan.Sleep(stopChan, 1*time.Second) { // between monitor restarts
 				return
 			}
 		}
-	}
-}
-
-// sleep waits for d or until stopChan is closed. It returns false if stopChan
-// was closed.
-func sleep(stopChan chan struct{}, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-stopChan:
-		return false
-	case <-t.C:
-		return true
 	}
 }
 
@@ -321,7 +310,7 @@ func (m *Monitor) startup(stopChan chan struct{}) (err error) {
 			break
 		}
 		status.Monitor(m.monitorId, status.MONITOR, "error making DB/DSN, sleep and retry: %s", err)
-		if !sleep(stopChan, m.retry.NextBackOff()) {
+		if !stopchan.Sleep(stopChan, m.retry.NextBackOff()) {
 			return nil // runLoop stopped (Stop called)
 		}
 	}
@@ -337,7 +326,7 @@ func (m *Monitor) startup(stopChan chan struct{}) (err error) {
 			break
 		}
 		status.Monitor(m.monitorId, status.MONITOR, "error loading plans, sleep and retry: %s", err)
-		if !sleep(stopChan, m.retry.NextBackOff()) {
+		if !stopchan.Sleep(stopChan, m.retry.NextBackOff()) {
 			return nil // runLoop stopped (Stop called)
 		}
 	}

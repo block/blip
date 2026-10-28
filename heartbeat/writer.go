@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/internal/stopchan"
 	"github.com/cashapp/blip/v2/sqlutil"
 	"github.com/cashapp/blip/v2/status"
 )
@@ -79,6 +80,11 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 		cancel context.CancelFunc
 	)
 
+	// stopCtx is canceled on stop, so a stop doesn't wait for a write to a
+	// hung or unreachable MySQL (up to WriteTimeout), or for a sleep
+	stopCtx, stopCancel := stopchan.Context(stopChan)
+	defer stopCancel()
+
 	// First INSERT: either creates row if it doesn't exist for this monitor ID,
 	// or it updates an existing row with the current timestamp and frequency.
 	// This must be done else the simpler UPDATE statements below, which is the
@@ -95,9 +101,12 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 	blip.Debug("%s: first heartbeat: %s", w.monitorId, ping)
 	for {
 		status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "first insert")
-		ctx, cancel = context.WithTimeout(context.Background(), WriteTimeout)
+		ctx, cancel = context.WithTimeout(stopCtx, WriteTimeout)
 		_, err = w.db.ExecContext(ctx, ping, params...)
 		cancel()
+		if stopCtx.Err() != nil {
+			return nil // stopped; a canceled write isn't an error
+		}
 		if err == nil { // success
 			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "sleep")
 			break
@@ -105,19 +114,15 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 
 		// Error --
 		blip.Debug("%s: first heartbeat failed: %s", w.monitorId, err)
+		wait := InitErrorWait
 		if sqlutil.ReadOnly(err) {
-			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: MySQL is read-only, sleeping %s", ReadOnlyWait)
-			time.Sleep(ReadOnlyWait)
+			wait = ReadOnlyWait
+			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: MySQL is read-only, sleeping %s", wait)
 		} else {
-			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: error: %s (sleeping %s)", err, InitErrorWait)
-			time.Sleep(InitErrorWait)
+			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "init: error: %s (sleeping %s)", err, wait)
 		}
-
-		// Was Stop called?
-		select {
-		case <-stopChan: // yes, return immediately
-			return nil
-		default: // no
+		if !stopchan.Sleep(stopCtx.Done(), wait) {
+			return nil // stopped
 		}
 	}
 
@@ -131,17 +136,24 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 	ping = fmt.Sprintf("UPDATE %s SET ts=NOW(3) WHERE src_id=?", w.table)
 	blip.Debug("%s: heartbeat: %s", w.monitorId, ping)
 	for {
-		time.Sleep(w.freq)
+		if !stopchan.Sleep(stopCtx.Done(), w.freq) {
+			return nil // stopped
+		}
 
 		status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "write")
-		ctx, cancel = context.WithTimeout(context.Background(), WriteTimeout)
+		ctx, cancel = context.WithTimeout(stopCtx, WriteTimeout)
 		_, err = w.db.ExecContext(ctx, ping, w.srcId)
 		cancel()
+		if stopCtx.Err() != nil {
+			return nil // stopped; a canceled write isn't an error
+		}
 		if err != nil {
 			blip.Debug("%s: %s", w.monitorId, err.Error())
 			if sqlutil.ReadOnly(err) {
 				status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "MySQL is read-only, sleeping %s", ReadOnlyWait)
-				time.Sleep(ReadOnlyWait)
+				if !stopchan.Sleep(stopCtx.Done(), ReadOnlyWait) {
+					return nil // stopped
+				}
 			} else {
 				status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "write error: %s", err)
 				// No special sleep on random errors; keep trying to write at freq
@@ -150,13 +162,6 @@ func (w *Writer) Write(stopChan, doneChan chan struct{}) error {
 			// Set status on successful Exec here, not before Sleep, so it
 			// doesn't overwrite status set on Exec error; "sleep" = "write OK"
 			status.Monitor(w.monitorId, status.HEARTBEAT_WRITER, "sleep")
-		}
-
-		// Was Stop called?
-		select {
-		case <-stopChan: // yes, return immediately
-			return nil
-		default: // no
 		}
 	}
 }

@@ -194,7 +194,17 @@ A monitor that hasn't stopped by then keeps stopping in the background, and Blip
 Blip reports it again every 10 times the stop timeout until it stops.
 If the monitor is reloaded with the same ID, the new monitor doesn't start until the old one has stopped.
 
-A healthy monitor usually stops in about 1 second, but a slow collection or a heartbeat on a read-only server can take longer than the default stop timeout.
+A stop doesn't wait for the next collection, plan change check, or heartbeat:
+
+* The level collector stops right away. It cancels a collection in progress and drops its metrics, and it drops metrics that haven't been sent to the sinks yet (a send in progress isn't canceled). A canceled collection isn't counted as an engine max runtime timeout. The same happens when a monitor restarts because one of its subsystems failed.
+* The plan changer and the heartbeat writer stop right away while they wait. The plan changer waits between checks, and backs off while MySQL is offline (up to about 90 seconds: 60 seconds plus jitter). The heartbeat writer waits between heartbeats, before it retries a first heartbeat that failed, and while MySQL is read-only. A stop cancels the plan changer's read-only check and a heartbeat write in progress, so it doesn't wait for a hung or unreachable MySQL.
+
+A running monitor usually stops in milliseconds, even when MySQL is hung or unreachable.
+A stop can take longer in these cases:
+
+* A collector, or its cleanup function, doesn't return promptly when its collection is canceled. A stop waits for every collector to return, then runs their cleanup functions.
+* A plan change is in progress, and a collector's `Prepare` doesn't return promptly when it's canceled. A stop cancels the plan change and waits for it.
+* The monitor is starting. A stop waits for it to make its connections, which calls its credentials function (for example, for an IAM auth token, up to 500 milliseconds each time) or a custom `DbProviderFactory`, and to load its plans, which queries MySQL only if they're in a table ([`plans.table`](#table-1)): up to 5 seconds, connecting included, when MySQL is unreachable or hung.
 
 ---
 

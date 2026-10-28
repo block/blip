@@ -567,19 +567,16 @@ func TestLevelCollector_RGB_DomainPrioirty(t *testing.T) {
 	monitor.TickerDuration(100*time.Millisecond, 100*time.Millisecond)
 	defer monitor.TickerDuration(time.Second, time.Second)
 
-	// Create LCO and prime its stopChan for 5 iterations
+	// Create LCO and stop it after 5 ticks
 	lco := monitor.NewLevelCollector(monitor.LevelCollectorArgs{
 		Config:     moncfg,
 		DB:         db,
 		PlanLoader: pl,
 		Sinks:      []blip.Sink{},
 	})
-	stopChan := make(chan struct{}, 5)
+	stopChan := make(chan struct{})
 	doneChan := make(chan struct{})
-	for i := 0; i < 5; i++ {
-		stopChan <- struct{}{}
-	}
-	close(stopChan)
+	defer monitor.StopAfterTicks(5, stopChan)()
 
 	// readyChan is closed by a fake event receiver when lco.ChangePlan sends
 	// event.CHANGE_PLAN_SUCCESS, which means the plan is loaded and ready.
@@ -692,12 +689,9 @@ func TestLevelCollector_RGB_SlowBlue(t *testing.T) {
 		Sinks:            []blip.Sink{},
 		TransformMetrics: xf,
 	})
-	stopChan := make(chan struct{}, 4)
+	stopChan := make(chan struct{})
 	doneChan := make(chan struct{})
-	for i := 0; i < 4; i++ {
-		stopChan <- struct{}{}
-	}
-	close(stopChan)
+	defer monitor.StopAfterTicks(4, stopChan)()
 
 	readyChan := planSet(nil)
 	defer event.RemoveSubscribers()
@@ -854,12 +848,9 @@ func TestLevelCollector_RGB_ProgressiveBlue(t *testing.T) {
 		Sinks:            []blip.Sink{},
 		TransformMetrics: xf,
 	})
-	stopChan := make(chan struct{}, 5)
+	stopChan := make(chan struct{})
 	doneChan := make(chan struct{})
-	for i := 0; i < 5; i++ {
-		stopChan <- struct{}{}
-	}
-	close(stopChan)
+	defer monitor.StopAfterTicks(5, stopChan)()
 
 	readyChan := planSet(nil)
 	defer event.RemoveSubscribers()
@@ -1002,12 +993,9 @@ func TestLevelCollector_RGB_Fault(t *testing.T) {
 		Sinks:            []blip.Sink{},
 		TransformMetrics: xf,
 	})
-	stopChan := make(chan struct{}, 3)
+	stopChan := make(chan struct{})
 	doneChan := make(chan struct{})
-	for i := 0; i < 3; i++ {
-		stopChan <- struct{}{}
-	}
-	close(stopChan)
+	defer monitor.StopAfterTicks(3, stopChan)()
 
 	// Record events to check that 2 event.COLLECTOR_FAULT events are sent
 	events := []string{}

@@ -13,6 +13,7 @@ import (
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/event"
 	"github.com/cashapp/blip/v2/ha"
+	"github.com/cashapp/blip/v2/internal/stopchan"
 	"github.com/cashapp/blip/v2/status"
 )
 
@@ -121,39 +122,51 @@ func (pch *planChanger) setErr(err error) {
 	}
 }
 
-// Run calls CheckState every second; or, if offline, it uses an exponential
-// backoff up to 60 seconds until back online (MySQL connection ok). There is
-// no logic in this function; it's just a timed loop to call CheckState. It's
-// run as a goroutine from Monitor.Run only if config.monitors.plans.adjust
-// is enabled (blip.ConfigPlanChange.Enabled returns true).
+// Run calls checkState every second; or, if offline, it uses an exponential
+// backoff up to about 90 seconds (60 seconds plus jitter) until back online
+// (MySQL connection ok). There is no logic in this function; it's just a timed
+// loop to call checkState. It's run as a goroutine from Monitor.Run only if
+// config.monitors.plans.adjust is enabled (blip.ConfigPlanChange.Enabled
+// returns true).
 func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 	defer close(doneChan)
 	defer status.Monitor(pch.monitorId, status.PLAN_CHANGER, "not running")
 
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "running")
 
+	// ctx is canceled on stop, so a stop doesn't wait for the read-only query
+	// to a hung or unreachable MySQL, or for the sleep between checks
+	ctx, cancel := stopchan.Context(stopChan)
+	defer cancel()
+
 	for {
-		select {
-		case <-stopChan:
-			return nil
-		default:
+		pch.checkState(ctx)
+
+		wait := 1 * time.Second
+		if pch.curr.state == blip.STATE_OFFLINE {
+			wait = pch.retry.NextBackOff()
 		}
-
-		pch.CheckState()
-
-		if pch.curr.state != blip.STATE_OFFLINE {
-			time.Sleep(1 * time.Second)
-		} else {
-			time.Sleep(pch.retry.NextBackOff())
+		if !stopchan.Sleep(ctx.Done(), wait) {
+			return nil // stopped
 		}
 	}
 }
 
 // CheckState checks the current state and changes state when necessary.
-// This is the main logic, called periodically by Run.
+// It's the same check that Run does periodically, but it can't be canceled.
 func (pch *planChanger) CheckState() {
+	pch.checkState(context.Background())
+}
+
+// checkState is the main logic of CheckState, called periodically by Run. It
+// does nothing if ctx is canceled (the PCH is stopping) while it checks the
+// state.
+func (pch *planChanger) checkState(ctx context.Context) {
 	now := Now()
-	obsv := pch.state()
+	obsv := pch.state(ctx)
+	if ctx.Err() != nil {
+		return // stopped
+	}
 
 	pch.Lock()
 	defer pch.Unlock()
@@ -237,8 +250,9 @@ func (pch *planChanger) lcoChangePlan(state, planName string) error {
 
 const readOnlyQuery = "SELECT @@read_only, @@super_read_only"
 
-// state queries MySQL to ascertain the HA and read-only state.
-func (pch *planChanger) state() string {
+// state queries MySQL to ascertain the HA and read-only state. If ctx is
+// canceled, it returns STATE_NONE, which the caller must ignore.
+func (pch *planChanger) state(ctx context.Context) string {
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "checking HA standby")
 	if pch.ha.Standby() {
 		return blip.STATE_STANDBY
@@ -248,9 +262,12 @@ func (pch *planChanger) state() string {
 	status.Monitor(pch.monitorId, status.PLAN_CHANGER, "checking MySQL read-only")
 
 	var ro, sro int
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	err := pch.db.QueryRowContext(ctx, readOnlyQuery).Scan(&ro, &sro)
+	qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := pch.db.QueryRowContext(qctx, readOnlyQuery).Scan(&ro, &sro)
 	cancel()
+	if ctx.Err() != nil {
+		return blip.STATE_NONE // stopped
+	}
 	pch.setErr(err)
 	if err != nil {
 		blip.Debug(err.Error())

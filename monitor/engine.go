@@ -179,6 +179,21 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 	collectAt := map[string][]*clutch{} // keyed on level
 	domainsAt := map[string][]string{}  // keyed on level
 	allDomains := map[string]bool{}     // keyed on level
+
+	// On error, the new collectors are discarded, so call their cleanup funcs
+	// to release their resources. For example, the repl collector starts its
+	// heartbeat.BlipReader goroutine in Prepare.
+	defer func() {
+		if lerr == nil {
+			return
+		}
+		for _, cl := range collectors {
+			if cl.cleanup != nil {
+				cl.cleanup()
+			}
+		}
+	}()
+
 	for levelName, level := range plan.Levels {
 		domains := make([]string, 0, len(level.Collect))
 		domainsAt[levelName] = make([]string, 0, len(level.Collect))
@@ -209,6 +224,9 @@ func (e *Engine) Prepare(ctx context.Context, plan blip.Plan, before, after func
 			status.Monitor(e.monitorId, status.ENGINE_PREPARE, "%s: prepare collector %s", plan.Name, domain)
 			cleanup, err := c.Prepare(ctx, plan)
 			if err != nil {
+				if cleanup != nil {
+					cleanup()
+				}
 				lerr = fmt.Errorf("while preparing %s/%s/%s: %s", plan.Name, levelName, domain, err)
 				return lerr
 			}

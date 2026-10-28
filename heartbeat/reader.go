@@ -152,10 +152,14 @@ func (r *BlipReader) run() {
 				r.lag = -1 // no heartbeat
 				r.Unlock()
 				status.Monitor(r.monitorId, "error:"+status.HEARTBEAT_READER, "no heartbeat for %s (retry in %s)", r.srcId, NoHeartbeatWait)
-				time.Sleep(NoHeartbeatWait)
+				if !r.wait(NoHeartbeatWait) {
+					return
+				}
 			default:
 				status.Monitor(r.monitorId, "error:"+status.HEARTBEAT_READER, "error: %s (retry in %s)", err.Error(), ReadErrorWait)
-				time.Sleep(ReadErrorWait)
+				if !r.wait(ReadErrorWait) {
+					return
+				}
 			}
 			continue
 		}
@@ -168,7 +172,9 @@ func (r *BlipReader) run() {
 			msg := fmt.Sprintf("not a replica: %s=%d (retry in %s)", r.replCheck, isRepl, ReplCheckWait)
 			blip.Debug("%s: %s", r.monitorId, msg)
 			status.Monitor(r.monitorId, status.HEARTBEAT_READER, "%s", msg)
-			time.Sleep(ReplCheckWait)
+			if !r.wait(ReplCheckWait) {
+				return
+			}
 			continue
 		}
 
@@ -187,7 +193,21 @@ func (r *BlipReader) run() {
 		r.Unlock()
 
 		status.Monitor(r.monitorId, status.HEARTBEAT_READER, "%d ms lag from %s (%s), next in %s", lag, srcId, r.srcRole, wait)
-		time.Sleep(wait)
+		if !r.wait(wait) {
+			return
+		}
+	}
+}
+
+// wait waits for d or until Stop is called. It returns false if Stop was called.
+func (r *BlipReader) wait(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-r.stopChan:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

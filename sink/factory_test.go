@@ -106,3 +106,40 @@ func TestFactoryMake_RetryDefaults(t *testing.T) {
 	assert.Equal(t, 5*time.Second, retry.sendTimeout)
 	assert.Equal(t, 200*time.Millisecond, retry.retryWait)
 }
+
+func TestFactoryMake_InvalidRetryOptions(t *testing.T) {
+	tests := []struct {
+		option string
+		value  string
+	}{
+		{"buffer-size", "ten"},
+		{"buffer-size", "-1"},
+		{"buffer-size", "0"},
+		{"buffer-size", "10001"},
+		{"send-timeout", "5"},
+		{"send-timeout", "-1s"},
+		{"send-timeout", "0s"},
+		{"send-retry-wait", "fast"},
+		{"send-retry-wait", "-200ms"},
+		{"send-retry-wait", "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.option+"="+tt.value, func(t *testing.T) {
+			_, err := Make(blip.SinkFactoryArgs{
+				SinkName:  "chronosphere",
+				MonitorId: "m1",
+				Options:   map[string]string{tt.option: tt.value},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid chronosphere sink option "+tt.option+": ")
+		})
+	}
+
+	// Max buffer-size is valid
+	_, err := Make(blip.SinkFactoryArgs{
+		SinkName:  "chronosphere",
+		MonitorId: "m1",
+		Options:   map[string]string{"buffer-size": "10000"},
+	})
+	require.NoError(t, err)
+}

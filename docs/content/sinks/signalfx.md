@@ -10,6 +10,8 @@ The signalfx sink sends metrics to [Splunk](https://www.splunk.com/), which [acq
 
 It reports all [tags]({{< ref "/config/config-file#tags" >}}) as dimensions.
 
+This sink also accepts the [retry]({{< ref "retry" >}}) options `buffer-size`, `send-timeout`, and `send-retry-wait`.
+
 ## Quick Reference
 
 ```yaml

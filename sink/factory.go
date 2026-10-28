@@ -5,6 +5,7 @@ package sink
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -109,44 +110,38 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 	// Built-in sinks use Retry to serialize access and retry on Send error.
 	// First build the specific sink, then return it wrapped in Retry.
 
-	// Parse retry options
+	// Parse retry options. Retry options are consumed here, so delete them
+	// from the options passed to the specific sink, which rejects unknown options.
+	sinkOpts := maps.Clone(args.Options)
 	retryArgs := RetryArgs{
 		MonitorId: args.MonitorId,
 	}
-	if v, ok := args.Options["buffer-size"]; ok {
+	if v, ok := sinkOpts["buffer-size"]; ok {
+		delete(sinkOpts, "buffer-size")
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid %s sink option buffer-size: %w", args.SinkName, err)
 		}
-		if n < 0 {
-			return nil, fmt.Errorf("invalid retry buffer-size: %d: must be greater than zero", n)
+		if n <= 0 || n > MAX_RETRY_BUFFER_SIZE {
+			return nil, fmt.Errorf("invalid %s sink option buffer-size: %d: must be greater than zero and at most %d", args.SinkName, n, MAX_RETRY_BUFFER_SIZE)
 		}
 		retryArgs.BufferSize = uint(n)
 	}
-	if v, ok := args.Options["send-timeout"]; ok {
-		d, err := time.ParseDuration(v)
+	if v, ok := sinkOpts["send-timeout"]; ok {
+		delete(sinkOpts, "send-timeout")
+		d, err := parseRetryDuration(args.SinkName, "send-timeout", v)
 		if err != nil {
 			return nil, err
 		}
 		retryArgs.SendTimeout = d
 	}
-	if v, ok := args.Options["send-retry-wait"]; ok {
-		d, err := time.ParseDuration(v)
+	if v, ok := sinkOpts["send-retry-wait"]; ok {
+		delete(sinkOpts, "send-retry-wait")
+		d, err := parseRetryDuration(args.SinkName, "send-retry-wait", v)
 		if err != nil {
 			return nil, err
 		}
 		retryArgs.SendRetryWait = d
-	}
-
-	// Retry options are consumed here, so remove them before passing
-	// options to the specific sink, which rejects unknown options
-	sinkOpts := make(map[string]string, len(args.Options))
-	for k, v := range args.Options {
-		switch k {
-		case "buffer-size", "send-timeout", "send-retry-wait":
-			continue
-		}
-		sinkOpts[k] = v
 	}
 
 	// Make specific built-in sink
@@ -190,4 +185,15 @@ func (f *factory) Make(args blip.SinkFactoryArgs) (blip.Sink, error) {
 	default:
 		return NewRetry(retryArgs), nil
 	}
+}
+
+func parseRetryDuration(sinkName, option, v string) (time.Duration, error) {
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s sink option %s: %w", sinkName, option, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid %s sink option %s: %s: must be greater than zero", sinkName, option, v)
+	}
+	return d, nil
 }

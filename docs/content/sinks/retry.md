@@ -3,13 +3,14 @@ title: retry
 ---
 
 The retry sink is a pseudo-sink that provides buffering, serialization, and retry for real sinks.
-The built-in sinks, except [`log`]({{< ref "log" >}}), use a retry sink to handle those three complexities.
+The built-in sinks, except [`log`]({{< ref "log" >}}) and `noop`, use a retry sink to handle those three complexities.
 
 The retry sink uses a LIFO queue (a stack) to prioritize sending the latest metrics.
 During a long outage of the real sink, the retry sink drops the oldest metrics and keeps the latest metrics, up to its buffer size, which is configurable.
 
-Retry is not configured as a separate sink.
-Set its options in the options of each built-in sink that uses it, alongside that sink's own options.
+Retry is not configured as a separate sink: a `sinks.retry` section fails with "sink retry not registered".
+Set the retry options in the options of each built-in sink that uses it, alongside that sink's own options.
+An invalid value prevents the monitor from loading.
 
 ## Quick Reference
 
@@ -28,7 +29,7 @@ sinks:
 
 | | |
 |-|-|
-|**Valid values**|Integer greater than zero|
+|**Valid values**|Integer from 1 to 10000|
 |**Default value**|60|
 
 Maximum number of metrics batches buffered while the real sink is failing.
@@ -38,7 +39,7 @@ When the buffer is full, the oldest batch is dropped.
 
 | | |
 |-|-|
-|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration)|
+|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration) greater than zero|
 |**Default value**|5s|
 
 Maximum time for each send cycle, in which buffered metrics batches are sent to the real sink, newest first.
@@ -48,7 +49,7 @@ Batches not sent in time stay in the buffer for the next cycle.
 
 | | |
 |-|-|
-|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration)|
+|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration) greater than zero|
 |**Default value**|200ms|
 
 Wait time between sends to the real sink within one send cycle.

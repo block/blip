@@ -17,6 +17,9 @@ const (
 	DEFAULT_RETRY_BUFFER_SIZE     = 60
 	DEFAULT_RETRY_SEND_TIMEOUT    = "5s"
 	DEFAULT_RETRY_SEND_RETRY_WAIT = "200ms"
+
+	// MAX_RETRY_BUFFER_SIZE is the maximum buffer-size sink option.
+	MAX_RETRY_BUFFER_SIZE = 10000
 )
 
 // Retry is a pseudo-sink that provides buffering, serialization, and retry for

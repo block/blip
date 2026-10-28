@@ -19,6 +19,8 @@ If you want a Chronosphere collector to scrape metrics, use [Prometheus emulatio
 This sink reports Prometheus-style metric names: `mysql_status_threads_running` instead of `status.global.threads_running`.
 It reports all [tags]({{< ref "/config/config-file#tags" >}}) as Prometheus labels.
 
+This sink also accepts the [retry]({{< ref "retry" >}}) options `buffer-size`, `send-timeout`, and `send-retry-wait`.
+
 ## Quick Reference
 
 ```yaml

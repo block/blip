@@ -122,10 +122,10 @@ func (pch *planChanger) setErr(err error) {
 	}
 }
 
-// Run calls CheckState every second; or, if offline, it uses an exponential
+// Run calls checkState every second; or, if offline, it uses an exponential
 // backoff up to about 90 seconds (60 seconds plus jitter) until back online
 // (MySQL connection ok). There is no logic in this function; it's just a timed
-// loop to call CheckState. It's run as a goroutine from Monitor.Run only if
+// loop to call checkState. It's run as a goroutine from Monitor.Run only if
 // config.monitors.plans.adjust is enabled (blip.ConfigPlanChange.Enabled
 // returns true).
 func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
@@ -140,7 +140,7 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 	defer cancel()
 
 	for {
-		pch.CheckState(ctx)
+		pch.checkState(ctx)
 
 		wait := 1 * time.Second
 		if pch.curr.state == blip.STATE_OFFLINE {
@@ -153,9 +153,15 @@ func (pch *planChanger) Run(stopChan, doneChan chan struct{}) error {
 }
 
 // CheckState checks the current state and changes state when necessary.
-// This is the main logic, called periodically by Run. It does nothing if ctx
-// is canceled (the PCH is stopping) while it checks the state.
-func (pch *planChanger) CheckState(ctx context.Context) {
+// It's the same check that Run does periodically, but it can't be canceled.
+func (pch *planChanger) CheckState() {
+	pch.checkState(context.Background())
+}
+
+// checkState is the main logic of CheckState, called periodically by Run. It
+// does nothing if ctx is canceled (the PCH is stopping) while it checks the
+// state.
+func (pch *planChanger) checkState(ctx context.Context) {
 	now := Now()
 	obsv := pch.state(ctx)
 	if ctx.Err() != nil {

@@ -49,6 +49,7 @@ func NewAPI(cfg blip.Config, ml *monitor.Loader) *API {
 
 	mux.HandleFunc("/status", api.status)
 	mux.HandleFunc("/status/monitors", api.statusMonitors)
+	mux.HandleFunc("/status/monitors/counters", api.statusMonitorsCounters)
 
 	mux.HandleFunc("/debug", api.debug)
 
@@ -204,6 +205,11 @@ func (api *API) status(w http.ResponseWriter, r *http.Request) {
 func (api *API) statusMonitors(w http.ResponseWriter, r *http.Request) {
 	blip.Debug("%v", r)
 	json.NewEncoder(w).Encode(status.ReportMonitors())
+}
+
+func (api *API) statusMonitorsCounters(w http.ResponseWriter, r *http.Request) {
+	blip.Debug("%v", r)
+	json.NewEncoder(w).Encode(status.ReportCounters())
 }
 
 // --------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import (
 	"github.com/cashapp/blip/v2/monitor"
 	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/server"
+	"github.com/cashapp/blip/v2/status"
 	"github.com/cashapp/blip/v2/test"
 	"github.com/cashapp/blip/v2/test/mock"
 )
@@ -68,5 +69,27 @@ func TestAPIStatusGet(t *testing.T) {
 	}
 	if _, ok := gotStatus["uptime"]; !ok {
 		t.Errorf("/status response does not have uptime: %+v", gotStatus)
+	}
+}
+
+func TestAPIStatusMonitorsCountersGet(t *testing.T) {
+	server := setup(t)
+	defer server.ts.Close()
+
+	const monitorId = "api-counters"
+	defer status.RemoveMonitor(monitorId)
+	status.Counter(monitorId, status.ENGINE_EMR_TIMEOUTS).Add(3)
+
+	var got map[string]map[string]uint64
+	url := server.url + "/status/monitors/counters"
+	statusCode, err := test.MakeHTTPRequest("GET", url, nil, &got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusCode != http.StatusOK {
+		t.Errorf("got HTTP status = %d, expected %d", statusCode, http.StatusOK)
+	}
+	if got[monitorId][status.ENGINE_EMR_TIMEOUTS] != 3 {
+		t.Errorf("/status/monitors/counters = %v, expected %s=3 for %s", got, status.ENGINE_EMR_TIMEOUTS, monitorId)
 	}
 }

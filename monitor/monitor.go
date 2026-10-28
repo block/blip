@@ -23,6 +23,7 @@ import (
 	"github.com/cashapp/blip/v2/heartbeat"
 	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/prom"
+	"github.com/cashapp/blip/v2/sink"
 	"github.com/cashapp/blip/v2/status"
 )
 
@@ -363,8 +364,11 @@ func (m *Monitor) startup() (err error) {
 			return err
 		}
 
-		// Run API to emulate an exporter, responding to GET /metrics
-		m.exporter = NewExporter(m.cfg.Exporter, promPlan, newEngineWithDBProvider(m.cfg, m.db, m.dbProvider))
+		// Run API to emulate an exporter, responding to GET /metrics. The
+		// exporter engine must be made with newExporterEngine, not like the
+		// LCO engine, so its counters have the status.EXPORTER_PREFIX and
+		// scrapes aren't counted as LCO collections.
+		m.exporter = NewExporter(m.cfg.Exporter, promPlan, newExporterEngine(m.cfg, m.db, m.dbProvider))
 		m.promAPI = prom.NewAPI(
 			m.cfg.Exporter,
 			m.monitorId,
@@ -409,6 +413,7 @@ func (m *Monitor) startup() (err error) {
 	// config.plans.change, then it will do this; if it's not enabled,
 	// we'll do it as the last startup step.
 	status.Monitor(m.monitorId, status.MONITOR, "starting level collector")
+	registerSinkCounters(m.sinks) // with the engine and LCO counters, see sink.CounterSink
 	m.lco = newLevelCollectorWithDBProvider(LevelCollectorArgs{
 		Config:           m.cfg,
 		DB:               m.db,
@@ -600,4 +605,16 @@ func (m *Monitor) panic(r interface{}) {
 	n := runtime.Stack(b, false)
 	errMsg := fmt.Errorf("PANIC: %s: %s\n%s", m.monitorId, r, string(b[0:n]))
 	m.setErr(errMsg, true)
+}
+
+// registerSinkCounters registers the monitor status counters of sinks that
+// have them. It must be called when the monitor starts, not when its sinks are
+// made, because the loader unloads (and removes the status of) a changed
+// monitor after it makes the sinks for the new monitor.
+func registerSinkCounters(sinks []blip.Sink) {
+	for _, s := range sinks {
+		if cs, ok := s.(sink.CounterSink); ok {
+			cs.RegisterCounters()
+		}
+	}
 }

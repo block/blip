@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/cashapp/blip/v2"
+	"github.com/cashapp/blip/v2/status"
 	"github.com/cashapp/blip/v2/test/mock"
 )
 
@@ -247,4 +248,46 @@ func TestRetry_NoDeltaSink(t *testing.T) {
 			BufferSize: 4,
 		})
 	}()
+}
+
+func TestRetryCountsDroppedMetrics(t *testing.T) {
+	const monitorId = "retry-dropped"
+	defer status.RemoveMonitor(monitorId)
+
+	// Real sink always fails, so every Send leaves its metrics in the buffer
+	mockSink := mock.Sink{
+		SendFunc: func(ctx context.Context, m *blip.Metrics) error {
+			return fmt.Errorf("send failed")
+		},
+	}
+	rb := NewRetry(RetryArgs{
+		MonitorId:   monitorId,
+		Sink:        mockSink,
+		BufferSize:  2,
+		SendTimeout: 10 * time.Millisecond,
+	})
+	counter := status.SINK_RETRY_DROPPED + ":" + mockSink.Name()
+
+	// Not registered yet: the 3rd Send pushes off metrics but isn't counted
+	for i := 1; i <= 3; i++ {
+		rb.Send(context.Background(), &blip.Metrics{Level: fmt.Sprintf("%d", i)})
+	}
+	if got := status.ReportCounters(monitorId); len(got) != 0 {
+		t.Fatalf("counters reported before RegisterCounters: %v", got)
+	}
+
+	// Delta forwards RegisterCounters to the Retry sink it wraps
+	NewDelta(rb).RegisterCounters()
+	if v, ok := status.ReportCounters(monitorId)[monitorId][counter]; !ok || v != 0 {
+		t.Fatalf("%s = %d (reported %t) after RegisterCounters, expected 0 and reported", counter, v, ok)
+	}
+
+	// Buffer holds 2, so the 4th and 5th Send push off the oldest metrics
+	for i := 4; i <= 5; i++ {
+		rb.Send(context.Background(), &blip.Metrics{Level: fmt.Sprintf("%d", i)})
+	}
+	assert.Equal(t, []string{"4", "5"}, stack(rb))
+	if got := status.ReportCounters(monitorId)[monitorId][counter]; got != 2 {
+		t.Errorf("%s = %d, expected 2", counter, got)
+	}
 }

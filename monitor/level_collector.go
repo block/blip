@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -57,6 +58,10 @@ type lco struct {
 	metricsChan chan []*blip.Metrics // sorted ascending by Interval
 	event       event.MonitorReceiver
 
+	ticksDropped     *atomic.Uint64 // status.LEVEL_TICKS_DROPPED
+	metricsDropped   *atomic.Uint64 // status.LEVEL_METRICS_DROPPED
+	transformDropped *atomic.Uint64 // status.LEVEL_TRANSFORM_DROPPED
+
 	stateMux *sync.Mutex
 	state    string
 	plan     blip.Plan
@@ -95,7 +100,26 @@ func newLevelCollectorWithDBProvider(args LevelCollectorArgs, dbProvider blip.Db
 		changeMux:   &sync.Mutex{},
 		event:       event.MonitorReceiver{MonitorId: args.Config.MonitorId},
 		metricsChan: make(chan []*blip.Metrics, 10),
+
+		ticksDropped:     status.Counter(args.Config.MonitorId, status.LEVEL_TICKS_DROPPED),
+		metricsDropped:   status.Counter(args.Config.MonitorId, status.LEVEL_METRICS_DROPPED),
+		transformDropped: status.Counter(args.Config.MonitorId, status.LEVEL_TRANSFORM_DROPPED),
 	}
+}
+
+// droppedTicks returns the number of ticks dropped between two consecutive
+// ticks received from a time.Ticker with duration d. A ticker drops ticks when
+// the receiver is slow, so the gap between received ticks is a multiple of d.
+// The gap is rounded to the nearest multiple of d to ignore tick jitter.
+func droppedTicks(last, now time.Time, d time.Duration) uint64 {
+	if last.IsZero() || d <= 0 {
+		return 0
+	}
+	n := (now.Sub(last) + d/2) / d // ticks elapsed, rounded
+	if n <= 1 {
+		return 0
+	}
+	return uint64(n - 1)
 }
 
 // TickerDuration sets the internal ticker duration for testing. This is only
@@ -143,6 +167,7 @@ RECV:
 				blip.Debug("%s: transform metrics", c.monitorId)
 				status.Monitor(c.monitorId, status.LEVEL_SINKS, "TransformMetrics")
 				if err := c.transformMetrics(metrics); err != nil {
+					c.transformDropped.Add(1)
 					blip.Debug("%s: transform metrics error, dropping metrics: %v", c.monitorId, err)
 					continue RECV
 				}
@@ -206,8 +231,17 @@ func (c *lco) Run(stopChan, doneChan chan struct{}) error {
 	interval := uint(0)
 	ticker := time.NewTicker(td)
 	defer ticker.Stop()
+	var lastTick time.Time
 	for startTime := range ticker.C {
 		s = s + te
+
+		// Count ticks dropped while the previous iteration was blocked, usually
+		// by a slow collection. Run doesn't catch up on dropped ticks, so each one
+		// delays every level by one tick.
+		if n := droppedTicks(lastTick, startTime, td); n > 0 {
+			c.ticksDropped.Add(n)
+		}
+		lastTick = startTime
 
 		// Was monitor stopped?
 		select {
@@ -304,6 +338,7 @@ func (c *lco) collect(interval uint, levelName string, startTime time.Time) {
 	select {
 	case c.metricsChan <- metrics:
 	default:
+		c.metricsDropped.Add(1)
 		c.event.Errorf(event.LCO_METRICS_FAULT, "metrics channel blocked (check for sink errors), dropping metrics: %s", metrics)
 	}
 }

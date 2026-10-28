@@ -36,6 +36,12 @@ AWS Secrets Manager `password-secret` authentication now uses the secret's optio
 
 Default sink HTTP clients now have a 10-second whole-request timeout plus bounded connection and response-header timeouts. Custom HTTP client factories are unchanged.
 
+### Unreleased
+
+* Added per-monitor fault counters, such as collector panics and timeouts, engine max runtime (EMR) timeouts, and dropped metrics, reported by the new [`GET /status/monitors/counters`]({{< ref "/api/status#get-statusmonitorscounters" >}}) API endpoint. Integrations can read them with the new `status.ReportCounters`, and register their own with `status.Counter`; the counter names are `status` constants like `status.COLLECTOR_PANICS`.
+* Added the optional `sink.CounterSink` interface for sinks that report monitor status counters; the monitor calls `RegisterCounters` each time it starts. A custom sink that wraps `sink.Retry` must forward `RegisterCounters` to it, else the retry buffer's `sink-retry-dropped` counter isn't reported.
+* Fixed the `engine-emr-timeout` event, which was defined but never sent. It's now sent once for each collection, or exporter scrape, that reaches the engine max runtime, so event receivers get one per EMR timeout.
+
 ### v2.1.0 (10 Aug 2026)
 
 Version v2.0.0 was withdrawn before release completion because its module path lacked the `/v2` suffix required by Go modules. v2.1.0 is the first usable v2 release.

@@ -20,3 +20,6 @@ Calling API endpoint [`/status/monitors`]({{< ref "api/status#get-statusmonitors
 ```
 
 The output is keyed on monitor ID.
+
+Calling API endpoint [`/status/monitors/counters`]({{< ref "api/status#get-statusmonitorscounters" >}}) returns cumulative collection fault counters for every monitor, like the number of domains that did not return before the engine max runtime, and the number of metrics dropped by sinks.
+Unlike monitor status, which shows only the latest state, counters show how often collection faults happen between status checks.

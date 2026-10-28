@@ -35,6 +35,7 @@ type metricID struct {
 }
 
 var _ blip.Sink = &Delta{}
+var _ CounterSink = &Delta{}
 
 func NewDelta(sink blip.Sink) *Delta {
 	if sink == nil {
@@ -52,6 +53,13 @@ func NewDelta(sink blip.Sink) *Delta {
 
 func (d *Delta) Name() string {
 	return "delta"
+}
+
+// RegisterCounters registers the counters of the wrapped sink, if any.
+func (d *Delta) RegisterCounters() {
+	if cs, ok := d.sink.(CounterSink); ok {
+		cs.RegisterCounters()
+	}
 }
 
 // Calculates DELTA_COUNTER values from any CUMULATIVE_COUNTER values in

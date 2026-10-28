@@ -7,20 +7,21 @@ package status
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 type status struct {
 	*sync.Mutex
 	blip     map[string]string
 	monitors map[string]map[string]string
-	counters map[string]map[string]*uint64
+	counters map[string]map[string]*atomic.Uint64
 }
 
 var s = &status{
 	Mutex:    &sync.Mutex{},
 	blip:     map[string]string{},
-	monitors: map[string]map[string]string{},  // monitorId => component
-	counters: map[string]map[string]*uint64{}, // monitorId => component
+	monitors: map[string]map[string]string{},         // monitorId => component
+	counters: map[string]map[string]*atomic.Uint64{}, // monitorId => counter
 }
 
 // Reset resets everything to zero values. It's only used for test.
@@ -28,8 +29,8 @@ func Reset() {
 	s = &status{
 		Mutex:    &sync.Mutex{},
 		blip:     map[string]string{},
-		monitors: map[string]map[string]string{},  // monitorId => component
-		counters: map[string]map[string]*uint64{}, // monitorId => component
+		monitors: map[string]map[string]string{},         // monitorId => component
+		counters: map[string]map[string]*atomic.Uint64{}, // monitorId => counter
 	}
 }
 
@@ -44,7 +45,6 @@ func Monitor(monitorId, component string, msg string, args ...interface{}) {
 	defer s.Unlock()
 	if _, ok := s.monitors[monitorId]; !ok {
 		s.monitors[monitorId] = map[string]string{}
-		s.counters[monitorId] = map[string]*uint64{}
 	}
 	s.monitors[monitorId][component] = fmt.Sprintf(msg, args...)
 }

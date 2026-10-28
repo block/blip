@@ -65,3 +65,32 @@ func TestLoaderLoadOne(t *testing.T) {
 	expectIds := []string{moncfg.MonitorId}
 	assert.ElementsMatch(t, gotIds, expectIds)
 }
+
+func TestLoaderInvalidTimeoutConnect(t *testing.T) {
+	// A malformed timeout-connect (here, no unit) must fail the load like any
+	// other invalid monitor field. Else the monitor would retry making its
+	// DB connection forever and never collect.
+	moncfg := blip.ConfigMonitor{
+		MonitorId:      "m1",
+		Username:       "root",
+		Password:       "test",
+		Hostname:       "127.0.0.1:" + test.MySQLPort[test.DefaultMySQLVersion],
+		TimeoutConnect: "10",
+	}
+	cfg := blip.Config{
+		Plans:    blip.ConfigPlans{Files: []string{"../test/plans/lpc_1_5_10.yaml"}},
+		Monitors: []blip.ConfigMonitor{moncfg},
+	}
+	args := monitor.LoaderArgs{
+		Config: cfg,
+		Factories: blip.Factories{
+			DbConn: dbconn.NewConnFactory(nil, nil),
+		},
+		PlanLoader: plan.NewLoader(nil),
+		RDSLoader:  aws.RDSLoader{ClientFactory: mock.RDSClientFactory{}},
+	}
+	loader := monitor.NewLoader(args)
+	err := loader.Load(context.Background())
+	assert.ErrorContains(t, err, "invalid config.monitor.timeout-connect")
+	assert.Empty(t, loader.Monitors())
+}

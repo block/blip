@@ -274,3 +274,44 @@ func TestApplyDefaultConfig(t *testing.T) {
 		t.Errorf("api.bind=%s, expected :1234", my.API.Bind)
 	}
 }
+
+func TestValidateTimeoutConnect(t *testing.T) {
+	// timeout-connect must be a non-negative Go duration. Empty is valid because
+	// defaults might not be applied yet, and zero disables the connect timeout.
+	tests := []struct {
+		timeout string
+		valid   bool
+	}{
+		{"", true},
+		{"0", true},
+		{"0s", true},
+		{"10s", true},
+		{"1500ms", true},
+		{"10", false}, // no unit
+		{"ten seconds", false},
+		{"-1s", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.timeout, func(t *testing.T) {
+			// Monitor defaults: config.mysql.timeout-connect, validated by Config.Validate
+			cfg := blip.DefaultConfig()
+			cfg.MySQL.TimeoutConnect = tt.timeout
+			err := cfg.Validate()
+			if tt.valid {
+				assert.NoError(t, err, "config.mysql")
+			} else {
+				assert.ErrorContains(t, err, "invalid config.mysql.timeout-connect", "config.mysql")
+			}
+
+			// Monitor: config.monitor.timeout-connect, validated by ConfigMonitor.Validate
+			mon := blip.ConfigMonitor{MonitorId: "m1", TimeoutConnect: tt.timeout}
+			err = mon.Validate()
+			if tt.valid {
+				assert.NoError(t, err, "config.monitor")
+			} else {
+				assert.ErrorContains(t, err, "invalid config.monitor.timeout-connect", "config.monitor")
+				assert.ErrorContains(t, err, "m1", "config.monitor")
+			}
+		})
+	}
+}

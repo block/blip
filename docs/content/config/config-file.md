@@ -505,10 +505,14 @@ The `socket` variable sets the MySQL socket.
 | | |
 |-|-|
 |**Type**|string|
-|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration)|
-|**Default value**||
+|**Valid values**|[Go duration string](https://pkg.go.dev/time#ParseDuration) &ge; 0|
+|**Default value**|10s|
 
-The `timeout-connect` variable sets the connection timeout.
+The `timeout-connect` variable sets the MySQL connection timeout: how long Blip waits to establish a new connection (the MySQL driver [`timeout` DSN parameter](https://github.com/go-sql-driver/mysql#timeout)).
+It bounds each new connection to an unreachable host, such as one that drops packets.
+A value of zero (`0` or `0s`) disables the timeout, in which case new connections wait for the operating system TCP connect timeout, which can be several minutes.
+
+It applies only to establishing a connection, not to queries on an established connection.
 
 ### plans
 

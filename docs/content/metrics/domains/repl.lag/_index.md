@@ -71,6 +71,10 @@ Only available with MySQL 8.x Performance Schema.
 
 ## Options
 
+When `repl.lag` is collected at more than one level, `writer`, `repl-check`, `table`, `source-id`, `source-role`, and `network-latency` are read from one level only: the first level, by name, that sets `writer` to `pfs` or `blip`, else the first level that collects `repl.lag`.
+The options `report-no-heartbeat`, `report-not-a-replica`, and `default-channel-name` apply per level.
+If one level sets `writer: pfs` and another sets `writer: blip`, the plan fails to prepare.
+
 ### Common
 
 #### `repl-check`

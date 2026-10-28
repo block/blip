@@ -266,3 +266,32 @@ func TestTruncateErrorSkipTruncate(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncateErrorSkipTruncateReportOnce(t *testing.T) {
+	t.Parallel()
+	collectedMetrics := []blip.MetricValue{
+		{
+			Name:  "Metric1",
+			Type:  blip.DELTA_COUNTER,
+			Value: 2.0,
+		},
+	}
+
+	testErr := fmt.Errorf(TRUNCATE_ERR_STR)
+	stopValue := false
+	truncatePolicy := errors.NewTruncateErrorPolicy("report-once,drop,retry")
+	truncatePolicy.SkipTruncate()
+
+	// Successful truncate after a skipped one: nothing to report
+	if _, err := truncatePolicy.TruncateError(nil, &stopValue, collectedMetrics); err != nil {
+		t.Errorf("Expected no error but got: %v", err)
+	}
+
+	// The first truncate error is still reported once
+	if _, err := truncatePolicy.TruncateError(testErr, &stopValue, collectedMetrics); err != testErr {
+		t.Errorf("Expected error %v but got: %v", testErr, err)
+	}
+	if _, err := truncatePolicy.TruncateError(testErr, &stopValue, collectedMetrics); err != nil {
+		t.Errorf("Expected no error after report-once but got: %v", err)
+	}
+}

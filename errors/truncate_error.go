@@ -38,12 +38,15 @@ func (p *TruncateErrorPolicy) TruncateError(err error, stop *bool, collectedMetr
 		*stop = true
 	}
 
-	// Report
+	// Report. Only count a truncate error: a successful truncate after a
+	// skipped one must not use up the report-once report.
 	var reportedErr error
-	if p.Policy.ReportError() {
-		reportedErr = err
-	} else {
-		blip.Debug("error policy=ignore: %v", err)
+	if err != nil {
+		if p.Policy.ReportError() {
+			reportedErr = err
+		} else {
+			blip.Debug("error policy=ignore: %v", err)
+		}
 	}
 
 	// We may need to change the resulting metric values depending on if we had an error with truncation or not.

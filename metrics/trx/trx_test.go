@@ -1,28 +1,26 @@
-// Copyright 2024 Block, Inc.
+// Copyright 2026 Block, Inc.
 
 package trx
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/cashapp/blip/v2/test/mock"
 )
 
-func TestCollectWrapsQueryError(t *testing.T) {
-	db := mock.ErrorDB(fmt.Errorf("query: %w", context.DeadlineExceeded))
+func TestCollectReturnsDeadlineExceeded(t *testing.T) {
+	db := mock.ContextDB()
 	defer db.Close()
 
 	c := NewTrx(db)
 	c.atLevel["kpi"] = trxMetrics{queryOldest: true}
 
-	_, err := c.Collect(context.Background(), "kpi")
-	if err == nil {
-		t.Fatal("Collect returned nil error, expected query error")
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), -1) // CMR already reached
+	defer cancel()
+	_, err := c.Collect(ctx, "kpi")
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("errors.Is(err, context.DeadlineExceeded) = false, expected true; err: %v", err)
+		t.Errorf("Collect returned error %v, expected an error wrapping context.DeadlineExceeded", err)
 	}
 }

@@ -138,6 +138,9 @@ func (c *Current) Collect(ctx context.Context, levelName string) ([]blip.MetricV
 		}
 		times = append(times, time/1e6) // picoseconds to microseconds
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s failed: %w", query, err)
+	}
 
 	sort.Float64s(times)
 

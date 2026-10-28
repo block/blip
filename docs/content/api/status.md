@@ -58,7 +58,7 @@ Compare successive values to get a rate.
 |`engine-domains-not-returned`|Domain started but not returned before the EMR; its metrics are reported late, if at all|
 |`collector-faults`|Domain still running at its next interval because it didn't stop at its collector max runtime (event `collector-fault`); its previous metrics are dropped|
 |`collector-panics`|Domain collector panic (event `collector-panic`); its metrics for the interval are lost. A panic in the foreground collect of the current interval is also counted in `engine-emr-timeouts` and `engine-domains-not-returned`; a panic while collecting in the background (after returning `ErrMore`) or after a collector fault is not|
-|`collector-timeouts`|Domain collector that stopped at its collector max runtime (CMR) and returned partial or no metrics. Only counted if the collector returns the context error or wraps it with `%w`|
+|`collector-timeouts`|Domain collector that stopped at its collector max runtime (CMR) and returned partial or no metrics. Only counted if the collector returns the context error or wraps it with `%w`. Some built-in collectors don't yet stop at the CMR, or don't report a CMR timeout while reading rows, so their timeouts aren't counted; for example, the `repl.lag` collector's `pfs` writer doesn't apply the CMR to its lag query|
 |`collector-flush-drops`|Domain metrics dropped because the engine collection channel was full (event `drop-metrics-flush`)|
 |`level-ticks-dropped`|Level collector tick dropped because the previous collection blocked past it; each delays later levels by one tick|
 |`level-metrics-dropped`|Collection dropped because sinks were not keeping up (event `lco-metrics-fault`), which can include late metrics from more than one interval|

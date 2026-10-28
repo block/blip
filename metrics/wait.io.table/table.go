@@ -341,6 +341,9 @@ func (t *Table) collectQuery(ctx context.Context, query string, params []interfa
 		}
 
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("Failed to read rows for wait.io.table: %w", err)
+	}
 
 	return metrics, rows.Err()
 }

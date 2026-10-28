@@ -47,6 +47,7 @@ const (
 	MONITOR_PANIC            = "monitor-panic"
 	MONITOR_STARTED          = "monitor-started"
 	MONITOR_STOPPED          = "monitor-stopped"
+	MONITOR_STOP_TIMEOUT     = "monitor-stop-timeout"
 	STATE_CHANGE_ABORT       = "state-change-abort"
 	STATE_CHANGE_BEGIN       = "state-change-begin"
 	STATE_CHANGE_END         = "state-change-end"

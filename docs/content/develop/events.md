@@ -31,4 +31,5 @@ Implement the [`event.Receiver` interface](https://pkg.go.dev/github.com/cashapp
 <p class="note">
 Registering a custom receive completely overrides the default receiver.
 Be sure your custom receiver handles all events.
+Your receiver must not panic: Blip sends events from its own goroutines, such as the loader goroutine that stops monitors and sends `monitor-stopped`, so a panic in the receiver crashes Blip.
 </p>

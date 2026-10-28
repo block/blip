@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -33,11 +34,13 @@ type StartMonitorFunc func(blip.ConfigMonitor) bool
 var (
 	ErrMonitorNotLoaded = errors.New("monitor not loaded")
 	ErrStopLoss         = errors.New("stop-loss prevents reloading")
+	ErrStopTimeout      = errors.New("monitor did not stop before the stop timeout; it is still stopping")
 )
 
 // loadedMonitor represents one validated and loaded Monitor created by
 // a call to Load. started is false until StartMonitors or Start is called.
-// Call Stop (or Unload) to stop a monitor.
+// Call Stop (or Unload) to stop a monitor. A monitor stopped by Stop is held:
+// StartMonitors doesn't start it until Start is called.
 //
 // Start/stop monitors only through the Loader. DO NOT call Monitor.Start or
 // Monitor.Stop directly, else the running state of the monitor and the Loader
@@ -45,7 +48,41 @@ var (
 type loadedMonitor struct {
 	monitor *Monitor
 	started bool
+
+	// startPending is true if the monitor was started while a monitor with
+	// the same ID was still stopping. It starts when that stop finishes.
+	startPending bool
+
+	// held is true if the monitor was stopped by Stop. StartMonitors doesn't
+	// start it until Start. A reload that changes the monitor replaces it with
+	// a new loadedMonitor, which isn't held.
+	held bool
 }
+
+// stoppingMonitor is a monitor that runStop is stopping in the background. Its
+// fields never change: runStop closes done and finished, which waiters read
+// without the Loader mutex. The mutex guards only the Loader.stopping map.
+type stoppingMonitor struct {
+	monitor  *Monitor
+	begin    time.Time
+	done     chan struct{} // closed when the monitor has stopped
+	finished chan struct{} // closed when runStop has removed the stop and started a pending start
+}
+
+// stopReportFactor sets how often a monitor that is stuck stopping is reported
+// again after the first report: every stopReportFactor x stop timeout.
+const stopReportFactor = 10
+
+// StartResult is the result of TryStart.
+type StartResult int
+
+const (
+	START_OK       StartResult = iota // monitor started
+	START_PENDING                     // monitor with the same ID is still stopping; monitor starts when that stop finishes
+	START_RUNNING                     // monitor was already running
+	START_DECLINED                    // Plugins.StartMonitor returned false, so the monitor was not started
+	START_ERROR                       // monitor was not started because of the returned error
+)
 
 // Loader is the singleton monitor loader and repo. It's created by the server
 // and only used there (and via API calls). It's dynamic so monitors can be
@@ -65,6 +102,13 @@ type Loader struct {
 	stopLossPercent float64
 	stopLossNumber  uint
 	*sync.Mutex
+
+	// stopping has an entry per monitor ID that is stopping, until runStop
+	// removes it after the stopped event. Until then, a monitor with the same
+	// ID doesn't start (startPending), so two never run at the same time.
+	stopping    map[string]*stoppingMonitor
+	stopTimeout time.Duration
+
 	stopChan     chan struct{}
 	doneChan     chan struct{}
 	rdsLoader    aws.RDSLoader
@@ -86,6 +130,10 @@ func NewLoader(args LoaderArgs) *Loader {
 		startMonitor = func(blip.ConfigMonitor) bool { return true }
 	}
 	stopLossNumber, stopLossPercent, _ := blip.StopLoss(args.Config.MonitorLoader.StopLoss) // already validated
+	stopTimeout, _ := time.ParseDuration(args.Config.MonitorLoader.StopTimeout)
+	if stopTimeout <= 0 {
+		stopTimeout, _ = time.ParseDuration(blip.DEFAULT_MONITOR_LOADER_STOP_TIMEOUT)
+	}
 	return &Loader{
 		cfg:        args.Config,
 		factory:    args.Factories,
@@ -97,13 +145,16 @@ func NewLoader(args LoaderArgs) *Loader {
 		stopLossNumber:  stopLossNumber,
 		repo:            map[string]*loadedMonitor{},
 		Mutex:           &sync.Mutex{},
+		stopping:        map[string]*stoppingMonitor{},
+		stopTimeout:     stopTimeout,
 		stopChan:        make(chan struct{}),
 		doneChan:        make(chan struct{}),
 		startMonitor:    startMonitor,
 	}
 }
 
-// StartMonitors starts all monitors that have been loaded but not started.
+// StartMonitors starts all monitors that have been loaded but not started,
+// except monitors stopped by Stop, which start only when Start is called.
 // This should be called after Load. On Blip startup, the server calls Load
 // in Server.Boot, then StartMonitors in server.Run. The user can reload
 // by calling the server API: /monitors/reload.
@@ -122,7 +173,7 @@ func (ml *Loader) StartMonitors() {
 	// roughly the same time. A simple wait more evenly distributes the loads.
 	n := 0
 	for i := range ml.repo {
-		if !ml.repo[i].started {
+		if !ml.repo[i].started && !ml.repo[i].startPending && !ml.repo[i].held {
 			n += 1
 		}
 	}
@@ -131,13 +182,13 @@ func (ml *Loader) StartMonitors() {
 
 	// Start monitors that aren't started yet
 	for i := range ml.repo {
-		if ml.repo[i].started {
-			continue // skip started monitors
+		if ml.repo[i].started || ml.repo[i].startPending || ml.repo[i].held {
+			continue // skip started, waiting to start, and stopped by Stop
 		}
 
 		m := ml.repo[i] // m is *loadedMonitor
 		status.Blip("monitor-loader", "starting %s", m.monitor.MonitorId())
-		if err := ml.start(m); err != nil {
+		if _, err := ml.start(m); err != nil {
 			// @todo event
 			blip.Debug(err.Error()) // shouldn't happen
 		}
@@ -146,23 +197,33 @@ func (ml *Loader) StartMonitors() {
 	status.Blip("monitor-loader", "%d monitors started at %s", n, blip.FormatTime(time.Now()))
 }
 
-// start starts one loaded monitored. It's calloped by StartMonitors and Start.
-// The caller must serialize ensure that the monitor is not already started;
-// this func does neither.
-func (ml *Loader) start(m *loadedMonitor) error {
+// start starts one loaded monitor. The caller must hold the Loader mutex and
+// ensure that the monitor isn't started. If a monitor with the same ID is still
+// stopping, it marks the monitor startPending instead, and runStop starts it
+// when that stop finishes.
+func (ml *Loader) start(m *loadedMonitor) (StartResult, error) {
+	monitorId := m.monitor.MonitorId()
+	if sm, ok := ml.stopping[monitorId]; ok {
+		blip.Debug("%s start pending: stopping since %s", monitorId, sm.begin)
+		m.startPending = true
+		status.Monitor(monitorId, status.MONITOR, "start pending: waiting for stop that began at %s", blip.FormatTime(sm.begin))
+		return START_PENDING, nil
+	}
+	m.startPending = false
+
 	// Call StartMonitor callback. Default allows all monitors to start,
 	// but user might have provided callback to filter monitors.
 	if !ml.startMonitor(m.monitor.Config()) {
-		blip.Debug("%s not run", m.monitor.MonitorId())
-		return nil
+		blip.Debug("%s not run", monitorId)
+		return START_DECLINED, nil
 	}
 
 	// Start the MySQL monitor, which starts metrics collection
 	if err := m.monitor.Start(); err != nil {
-		return err
+		return START_ERROR, err
 	}
 	m.started = true
-	return nil
+	return START_OK, nil
 }
 
 // [ 1, 10) = <1s startup
@@ -189,8 +250,9 @@ func wait(n int) int {
 
 // Load loads all configured monitors and unloads (stops and removes) monitors
 // that have been removed or changed since the last call to Load. It does not
-// start new monitors. Call StartMonitors after Load to start new (or previously
-// stopped) monitors.
+// start new monitors. Call StartMonitors after Load to start new and changed
+// monitors. A monitor stopped by Stop stays stopped until Start, unless its
+// config changes or it's removed and loaded again.
 //
 // Server.Boot calls Load, then Server.Run calls StartMonitors.
 //
@@ -200,8 +262,29 @@ func wait(n int) int {
 // If Load returns error, the currently loaded monitors are not affected.
 // The error indicates a problem loading monitors or a validation error.
 //
-// This function is safe for concurrent use, but calls are serialized.
+// Unloaded monitors stop in parallel, outside the Loader mutex. Load waits for
+// them like Stop but no longer than the stop timeout or ctx; a monitor still
+// stopping then isn't an error. If ctx ends first, Load returns ctx.Err(), but
+// the loaded monitors have already been updated. Events MONITORS_LOADING and
+// MONITORS_LOADED are sent with the mutex held, so concurrent calls' events
+// are paired.
+//
+// This function is safe for concurrent use. Changes to the loaded monitors are
+// serialized, but waiting for monitors to stop is not.
 func (ml *Loader) Load(ctx context.Context) error {
+	stops, err := ml.loadAndUnload(ctx)
+	if err != nil {
+		return err
+	}
+	if err := ml.waitStopped(ctx, stops, false); err != nil && err != ErrStopTimeout {
+		return err // ctx ended; the repo is already updated
+	}
+	return nil
+}
+
+// loadAndUnload is the locked part of Load. It returns the stops of the
+// monitors that it unloaded.
+func (ml *Loader) loadAndUnload(ctx context.Context) ([]*stoppingMonitor, error) {
 	ml.Lock()
 	defer ml.Unlock()
 
@@ -219,7 +302,7 @@ func (ml *Loader) Load(ctx context.Context) error {
 	// monitors as compared to what's currently in the repo.
 	diff, err := ml.load(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// ----------------------------------------------------------------------
@@ -246,7 +329,7 @@ func (ml *Loader) Load(ctx context.Context) error {
 		}
 		if errMsg != "" {
 			event.Error(event.MONITORS_STOPLOSS, errMsg)
-			return ErrStopLoss
+			return nil, ErrStopLoss
 		}
 	}
 
@@ -255,12 +338,14 @@ func (ml *Loader) Load(ctx context.Context) error {
 
 	// Unload monitors that have been removed or changed. Changed monitors have
 	// a new *Monitor in diff.added with the same monitor ID, so we must unload
-	// the old monitor first, then add the monitor (with the same ID).
-	for _, mon := range diff.removed {
-		ml.Unload(mon.MonitorId(), false)
-	}
-	for _, mon := range diff.changed {
-		ml.Unload(mon.MonitorId(), false)
+	// the old monitor first, then add the monitor (with the same ID). If the old
+	// one is still stopping, the new one starts when it has stopped (see start).
+	stops := []*stoppingMonitor{}
+	for _, mons := range [][]*Monitor{diff.removed, diff.changed} {
+		for _, mon := range mons {
+			ml.unload(mon.MonitorId())
+			stops = append(stops, ml.stopping[mon.MonitorId()]) // nil if not stopping
+		}
 	}
 
 	// Add new monitors to the repo but don't start them: that's done in StartMonitors.
@@ -271,7 +356,7 @@ func (ml *Loader) Load(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	return stops, nil
 }
 
 type diff struct {
@@ -585,7 +670,11 @@ func (ml *Loader) testLocal(bg context.Context, moncfg blip.ConfigMonitor) error
 func (ml *Loader) Monitor(monitorId string) *Monitor {
 	ml.Lock()
 	defer ml.Unlock()
-	return ml.repo[monitorId].monitor
+	m, ok := ml.repo[monitorId]
+	if !ok {
+		return nil
+	}
+	return m.monitor
 }
 
 // Monitors returns a list of all currently loaded monitors.
@@ -608,44 +697,254 @@ func (ml *Loader) Count() uint {
 	return uint(len(ml.repo))
 }
 
-// Start starts a monitor if it's not already running.
+// Start starts a monitor if it's not already running. It returns nil if the
+// monitor is already running, if its start is pending (see TryStart), or if
+// Plugins.StartMonitor declines to start it. Start always locks the Loader
+// mutex: lock is ignored, as in earlier v2 releases, and deprecated.
 func (ml *Loader) Start(monitorId string, lock bool) error {
+	_, err := ml.TryStart(monitorId)
+	return err
+}
+
+// TryStart starts a monitor like Start and returns whether it started, was
+// already running, or was declined by Plugins.StartMonitor. It returns
+// START_PENDING if a monitor with the same ID is still stopping: the monitor
+// starts when that stop finishes. It returns START_ERROR and an error, like
+// ErrMonitorNotLoaded, if the monitor didn't start. In v3, it will be folded
+// into Start, and the lock parameter will be removed.
+func (ml *Loader) TryStart(monitorId string) (StartResult, error) {
 	ml.Lock()
 	defer ml.Unlock()
 	m, ok := ml.repo[monitorId]
 	if !ok {
-		return ErrMonitorNotLoaded
+		return START_ERROR, ErrMonitorNotLoaded
 	}
 	if m.started {
-		return nil
+		return START_RUNNING, nil
 	}
-	return ml.start(m)
+	// Not held even if the StartMonitor plugin declines it, so the next
+	// StartMonitors asks the plugin again
+	m.held = false
+	return ml.start(m) // START_PENDING while the monitor ID is stopping
 }
 
-// Stop stops a monitor but does not unload it. It can be started again
-// by calling Start.
+// Stop stops a monitor but does not unload it, and cancels a pending start.
+// The monitor stays stopped, even if it wasn't running, until Start is called:
+// StartMonitors doesn't start it. Stop waits for the monitor to stop,
+// or for an unloaded or replaced monitor with the same ID that's still stopping,
+// but no longer than the stop timeout. It returns ErrStopTimeout if the monitor
+// is still stopping; it keeps stopping in the background.
+//
+// If lock is false, the caller must hold the Loader mutex, and Stop waits while
+// it's held. The lock parameter is deprecated.
 func (ml *Loader) Stop(monitorId string, lock bool) error {
+	return ml.stopWait(monitorId, lock, false)
+}
+
+// Unload stops and removes a monitor. It waits, and takes the deprecated lock
+// argument, the same as Stop.
+func (ml *Loader) Unload(monitorId string, lock bool) error {
+	return ml.stopWait(monitorId, lock, true)
+}
+
+// stopWait is Stop, or Unload if remove is true.
+func (ml *Loader) stopWait(monitorId string, lock, remove bool) error {
 	if lock {
 		ml.Lock()
-		defer ml.Unlock()
 	}
+	if remove {
+		ml.unload(monitorId)
+	} else if m, ok := ml.repo[monitorId]; ok {
+		if m.startPending {
+			m.startPending = false
+			status.Monitor(monitorId, status.MONITOR, "pending start canceled at %s", blip.FormatTime(time.Now()))
+		}
+		m.held = true
+		ml.stop(m)
+	}
+	sm := ml.stopping[monitorId] // nil if not stopping
+	if lock {
+		ml.Unlock()
+	}
+	return ml.waitStopped(context.Background(), []*stoppingMonitor{sm}, !lock)
+}
+
+// unload removes a monitor from the repo and begins stopping it, if it's
+// running. The caller must hold the Loader mutex.
+func (ml *Loader) unload(monitorId string) {
 	m, ok := ml.repo[monitorId]
 	if !ok {
-		return nil
+		return
 	}
-	m.monitor.Stop()
+	delete(ml.repo, monitorId)
+	ml.stop(m)
+	if _, ok := ml.stopping[monitorId]; !ok {
+		// Nothing is stopping with this ID, so nothing will report its status again
+		status.RemoveMonitor(monitorId)
+	}
+}
+
+// stop begins stopping a monitor in the background, if it's running. The
+// caller must hold the Loader mutex. A started monitor is never stopping,
+// because start doesn't start a monitor while its ID is stopping.
+func (ml *Loader) stop(m *loadedMonitor) {
+	if !m.started {
+		return // DO NOT call Monitor.Stop on a monitor that never started
+	}
 	m.started = false
+	monitorId := m.monitor.MonitorId()
+	sm := &stoppingMonitor{
+		monitor:  m.monitor,
+		begin:    time.Now(),
+		done:     make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	ml.stopping[monitorId] = sm
+	go ml.runStop(monitorId, sm)
+}
+
+// runStop stops a monitor in the background, and reports it if it hasn't
+// stopped within the stop timeout, then every stopReportFactor x stop timeout.
+// This one goroutine sends every stop event, so the stopped event comes last,
+// and sends them without the mutex because event receivers run synchronously.
+func (ml *Loader) runStop(monitorId string, sm *stoppingMonitor) {
+	defer close(sm.finished)
+	go func() {
+		sm.monitor.halt() // returns true: the Loader stops only monitors that it started
+		close(sm.done)
+	}()
+
+	stuck := false
+	timer := time.NewTimer(ml.stopTimeout)
+	defer timer.Stop()
+WAIT:
+	for {
+		select {
+		case <-sm.done:
+			break WAIT
+		case <-timer.C:
+		}
+		if ml.stopTimedOut(monitorId, sm) {
+			stuck = true
+		}
+		timer.Reset(stopReportFactor * ml.stopTimeout)
+	}
+
+	d := time.Since(sm.begin)
+	blip.Debug("%s stopped in %s", monitorId, d)
+	if stuck {
+		sm.monitor.event.Sendf(event.MONITOR_STOPPED, "stopped in %s, after the stop timeout (%s)", d, ml.stopTimeout)
+	} else {
+		sm.monitor.event.Sendf(event.MONITOR_STOPPED, "stopped in %s", d)
+	}
+	if evt, msg := ml.removeStop(monitorId, sm, stuck); evt != "" {
+		sm.monitor.event.Error(evt, msg)
+	}
+}
+
+// stopTimedOut reports a monitor that hasn't stopped and returns true. It
+// returns false if the monitor stopped while it waited for the mutex.
+func (ml *Loader) stopTimedOut(monitorId string, sm *stoppingMonitor) bool {
+	ml.Lock()
+	if isClosed(sm.done) {
+		ml.Unlock()
+		return false
+	}
+	d := time.Since(sm.begin).Round(time.Millisecond)
+	status.Monitor(monitorId, "error:stop", "not stopped after %s; stop began at %s", d, blip.FormatTime(sm.begin))
+	msg := fmt.Sprintf("not stopped after %s; still stopping in the background", d)
+	if m, ok := ml.repo[monitorId]; ok && m.startPending {
+		msg += "; a monitor with the same ID is waiting for it to stop"
+	}
+	ml.Unlock()
+
+	blip.Debug("%s: %s", monitorId, msg)
+	sm.monitor.event.Error(event.MONITOR_STOP_TIMEOUT, msg)
+	return true
+}
+
+// removeStop removes a finished stop and its error:stop status, and the status
+// of an unloaded or replaced monitor. Then it starts a pending start of the
+// monitor ID. The client was told it would start (API status 202), so the
+// monitor status says if it's declined or fails; a failure returns an event,
+// which the caller sends after the mutex is released.
+func (ml *Loader) removeStop(monitorId string, sm *stoppingMonitor, stuck bool) (evt, msg string) {
+	ml.Lock()
+	defer ml.Unlock()
+	delete(ml.stopping, monitorId)
+	if stuck {
+		status.RemoveComponent(monitorId, "error:stop")
+	}
+	m, ok := ml.repo[monitorId]
+	if !ok || m.monitor != sm.monitor {
+		status.RemoveMonitor(monitorId)
+	}
+	if !ok || !m.startPending {
+		return "", ""
+	}
+
+	// Recover a panic, for example in Plugins.StartMonitor: this is the stop
+	// goroutine, not an API handler or the caller of StartMonitors
+	defer func() {
+		if r := recover(); r != nil {
+			b := make([]byte, 4096)
+			n := runtime.Stack(b, false)
+			status.Monitor(monitorId, status.MONITOR, "not started: pending start panicked: %v", r)
+			evt, msg = event.MONITOR_PANIC, fmt.Sprintf("pending start: PANIC: %s: %v\n%s", monitorId, r, b[:n])
+		}
+	}()
+	switch res, err := ml.start(m); {
+	case err != nil:
+		status.Monitor(monitorId, status.MONITOR, "not started: pending start failed: %s", err)
+		return event.MONITOR_ERROR, "pending start: " + err.Error()
+	case res == START_DECLINED:
+		status.Monitor(monitorId, status.MONITOR, "not started: declined by the StartMonitor plugin")
+	}
+	return "", ""
+}
+
+// waitStopped waits for stops to finish, but no longer than the stop timeout
+// or ctx. It returns ctx.Err() if ctx ends first, or ErrStopTimeout if a
+// monitor is still stopping at the stop timeout. Nil stops are ignored.
+//
+// It waits for finished (status removed, pending start started), or for done
+// if mutexHeld, because runStop needs the mutex to close finished. At the stop
+// timeout, a monitor that's done counts as stopped: runStop might be waiting
+// for the mutex, which StartMonitors can hold for seconds.
+func (ml *Loader) waitStopped(ctx context.Context, stops []*stoppingMonitor, mutexHeld bool) error {
+	timeout, cancel := context.WithTimeout(ctx, ml.stopTimeout)
+	defer cancel()
+	for _, sm := range stops {
+		if sm == nil {
+			continue
+		}
+		wait := sm.finished
+		if mutexHeld {
+			wait = sm.done
+		}
+		select {
+		case <-wait:
+			continue
+		case <-timeout.Done():
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !isClosed(sm.done) {
+			return ErrStopTimeout
+		}
+	}
 	return nil
 }
 
-// Unload stops and removes a monitor.
-func (ml *Loader) Unload(monitorId string, lock bool) error {
-	if err := ml.Stop(monitorId, lock); err != nil {
-		return err
+// isClosed returns true if c is closed. Nothing must send on c.
+func isClosed(c chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
 	}
-	delete(ml.repo, monitorId)
-	status.RemoveMonitor(monitorId)
-	return nil
 }
 
 // Print prints all loaded monitors in blip.ConfigMonitor YAML format.

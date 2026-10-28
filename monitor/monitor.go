@@ -71,7 +71,9 @@ type Monitor struct {
 	hbw        *heartbeat.Writer
 
 	// Control chans and sync
+	lifeMux     *sync.Mutex   // serializes Start and Stop; guards runLoopChan and runLoopDone
 	runLoopChan chan struct{} // Stop(): stop the monitor
+	runLoopDone chan struct{} // closed when runLoop returns
 	runChan     chan struct{} // stop goroutines run by monitor
 	wg          sync.WaitGroup
 
@@ -106,10 +108,11 @@ func NewMonitor(args MonitorArgs) *Monitor {
 		transformMetric: args.TransformMetric,
 		ha:              args.HA,
 		// --
-		runMux: &sync.RWMutex{},
-		wg:     sync.WaitGroup{},
-		event:  event.MonitorReceiver{MonitorId: args.Config.MonitorId},
-		retry:  retry,
+		runMux:  &sync.RWMutex{},
+		lifeMux: &sync.Mutex{},
+		wg:      sync.WaitGroup{},
+		event:   event.MonitorReceiver{MonitorId: args.Config.MonitorId},
+		retry:   retry,
 	}
 }
 
@@ -128,38 +131,44 @@ func (m *Monitor) DSN() string {
 	return m.dsn
 }
 
-// Stop stops the monitor. It is idempotent and thread-safe.
+// Stop stops the monitor. It is idempotent and thread-safe. It returns when
+// runLoop and all monitor subsystems have stopped, so it blocks for as long
+// as a subsystem takes to stop. If it stopped the monitor, it sends event
+// MONITOR_STOPPED for the monitor with the message "stopped in <duration>",
+// like the Loader.
 //
 // Start/stop monitors only through the Loader. DO NOT call Start or
 // Stop directly, else the running state of the monitor and the Loader
 // will be out of sync.
 func (m *Monitor) Stop() error {
-	m.runMux.Lock()
-	defer m.runMux.Unlock()
+	t0 := time.Now()
+	if m.halt() {
+		m.event.Sendf(event.MONITOR_STOPPED, "stopped in %s", time.Since(t0))
+	}
+	return nil
+}
 
+// halt stops the monitor like Stop but doesn't send event MONITOR_STOPPED, so
+// the Loader can send it after other stop events. It returns true if it stopped
+// the monitor, or false if the monitor wasn't running.
+func (m *Monitor) halt() bool {
+	m.lifeMux.Lock()
+	defer m.lifeMux.Unlock()
+	if m.runLoopChan == nil || isClosed(m.runLoopChan) {
+		blip.Debug("%s: Stop call: not running", m.monitorId)
+		return false
+	}
 	blip.Debug("%s: Stop call", m.monitorId)
 	defer blip.Debug("%s: Stop return", m.monitorId)
 
-	// Stop runLoop() _first_, else it will restart run()
-	select {
-	case <-m.runLoopChan: // not running
-		blip.Debug("%s: already stopped", m.monitorId)
-		return nil
-	default: // running
-	}
-
-	// Stop runLoop so it won't restart everything
+	// Stop runLoop, which stops the subsystems and closes database resources
+	// before it returns. Waiting for it (with lifeMux held) ensures that a
+	// later Start doesn't run a second runLoop while this one is still running.
 	close(m.runLoopChan)
+	<-m.runLoopDone
 
-	// Stop and wait for monitor subsystems
-	m.stop(false, "Stop")
-
-	// Everything should be stopped now, so close database resources.
-	m.closeDB()
-
-	event.Sendf(event.MONITOR_STOPPED, "%s", m.monitorId)
 	status.Monitor(m.monitorId, status.MONITOR, "stopped at %s", blip.FormatTime(time.Now()))
-	return nil
+	return true
 }
 
 // Start starts the monitor. If it's already running, it returns an error.
@@ -169,44 +178,67 @@ func (m *Monitor) Stop() error {
 // Stop directly, else the running state of the monitor and the Loader
 // will be out of sync.
 func (m *Monitor) Start() error {
-	m.runMux.Lock()
-	defer m.runMux.Unlock()
-	select {
-	case <-m.runLoopChan:
-		// not running
-		blip.Debug("%s: start (again)", m.monitorId)
-	default:
-		if m.runLoopChan != nil { // running
-			return fmt.Errorf("ready running")
-		}
-		// first start
-		blip.Debug("%s: start (first)", m.monitorId)
+	m.lifeMux.Lock()
+	defer m.lifeMux.Unlock()
+	if m.runLoopChan != nil && !isClosed(m.runLoopChan) {
+		return fmt.Errorf("already running")
 	}
+	blip.Debug("%s: start", m.monitorId)
 	m.runLoopChan = make(chan struct{})
-	go m.runLoop()
+	m.runLoopDone = make(chan struct{})
+	go m.runLoop(m.runLoopChan, m.runLoopDone)
 	return nil
 }
 
 // runnLoop starts and keeps the monitor subsystems running by calling startup.
 // If any subsystem crashes, it calls startup again. It doesn't stop until Stop
-// is called.
+// closes stopChan. Before it returns, it stops the subsystems and closes
+// database resources, then it closes doneChan.
 //
-// runLoop is called only by Start, which guards (serializes) it.
-func (m *Monitor) runLoop() {
+// runLoop is called only by Start, which guards (serializes) it. Each runLoop
+// has its own stopChan and doneChan; it must not read m.runLoopChan because
+// that's replaced by the next Start.
+func (m *Monitor) runLoop(stopChan, doneChan chan struct{}) {
+	defer close(doneChan)
+	defer func() {
+		// Stop the subsystems, if any are running, and close database resources
+		m.runMux.Lock()
+		m.stop(false, "runLoop")
+		m.closeDB()
+		m.runMux.Unlock()
+	}()
 	defer blip.Debug("%s: runLoop return", m.monitorId)
 	for {
 		// New runChan for every iteration; it can only be used/closed once
 		m.runMux.Lock()
+		select {
+		case <-stopChan:
+			m.runMux.Unlock()
+			return
+		default:
+		}
 		m.runChan = make(chan struct{})
+		runChan := m.runChan
 		m.runMux.Unlock()
 
 		// Run monitor startup sequence to start all (enabled) monitor subsystems.
 		// If successful, the monitor is running but that does _not_ mean metrics
 		// are collecting because collectors can fail for different reasons.
-		err := m.startup()
+		err := m.startup(stopChan)
+
+		// If Stop interrupted startup, startup returns nil, but the monitor
+		// isn't running: don't clear errors or report it running
+		select {
+		case <-stopChan:
+			return
+		default:
+		}
+
 		m.setErr(err, false)
 		if err != nil {
-			time.Sleep(m.retry.NextBackOff())
+			if !sleep(stopChan, m.retry.NextBackOff()) {
+				return
+			}
 			continue
 		}
 
@@ -218,12 +250,27 @@ func (m *Monitor) runLoop() {
 		m.retry.Reset()
 		status.Monitor(m.monitorId, status.MONITOR, "running since %s", blip.FormatTime(time.Now()))
 		select {
-		case <-m.runLoopChan: // Stop called
+		case <-stopChan: // Stop called
 			return
-		case <-m.runChan: // internal failure
+		case <-runChan: // internal failure
 			blip.Debug("%s: runChan closed; restarting", m.monitorId)
-			time.Sleep(1 * time.Second) // between monitor restarts
+			if !sleep(stopChan, 1*time.Second) { // between monitor restarts
+				return
+			}
 		}
+	}
+}
+
+// sleep waits for d or until stopChan is closed. It returns false if stopChan
+// was closed.
+func sleep(stopChan chan struct{}, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-stopChan:
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
@@ -234,7 +281,8 @@ func (m *Monitor) runLoop() {
 // then runLoop() calls startup again to restart monitoring.
 //
 // startup is called only by runLoop, which guards (serializes) and monitors it.
-func (m *Monitor) startup() (err error) {
+// It returns nil without starting subsystems if stopChan is closed.
+func (m *Monitor) startup(stopChan chan struct{}) (err error) {
 	blip.Debug("%s: startup call", m.monitorId)
 	defer blip.Debug("%s: startup return", m.monitorId)
 
@@ -272,13 +320,10 @@ func (m *Monitor) startup() (err error) {
 			m.runMux.Unlock()
 			break
 		}
-		select {
-		case <-m.runLoopChan:
-			return nil // runLoop stopped (Stop called)
-		default:
-		}
 		status.Monitor(m.monitorId, status.MONITOR, "error making DB/DSN, sleep and retry: %s", err)
-		time.Sleep(m.retry.NextBackOff())
+		if !sleep(stopChan, m.retry.NextBackOff()) {
+			return nil // runLoop stopped (Stop called)
+		}
 	}
 
 	// ----------------------------------------------------------------------
@@ -291,13 +336,10 @@ func (m *Monitor) startup() (err error) {
 		if err == nil { // success
 			break
 		}
-		select {
-		case <-m.runLoopChan:
-		default:
-			return nil // // runLoop stopped (Stop called)
-		}
 		status.Monitor(m.monitorId, status.MONITOR, "error loading plans, sleep and retry: %s", err)
-		time.Sleep(m.retry.NextBackOff())
+		if !sleep(stopChan, m.retry.NextBackOff()) {
+			return nil // runLoop stopped (Stop called)
+		}
 	}
 
 	// //////////////////////////////////////////////////////////////////////
@@ -306,6 +348,15 @@ func (m *Monitor) startup() (err error) {
 
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
+
+	// Don't start subsystems if Stop was called. If Stop was called, runLoop
+	// returns after startup and stops what startup started.
+	select {
+	case <-stopChan:
+		return nil // runLoop stopped (Stop called)
+	default:
+	}
+
 	defer func() {
 		if err != nil {
 			m.stop(false, "startup error")
@@ -544,7 +595,11 @@ func (m *Monitor) stop(lock bool, caller string) {
 		defer m.runMux.Unlock()
 	}
 
-	// Already stopped?
+	// Not started yet (runLoop hasn't made runChan), or already stopped?
+	if m.runChan == nil {
+		blip.Debug("%s: stop called by %s (not started)", m.monitorId, caller)
+		return
+	}
 	select {
 	case <-m.runChan:
 		blip.Debug("%s: stop called by %s (noop)", m.monitorId, caller)
@@ -584,6 +639,15 @@ func (m *Monitor) stop(lock bool, caller string) {
 func (m *Monitor) stopRun(runChan chan struct{}, caller string) {
 	m.runMux.Lock()
 	defer m.runMux.Unlock()
+	// Return without logging if the run is already stopped. m.stop would
+	// return too, but it logs first. Subsystems call stopRun after wg.Done, so
+	// stopRun can run after Stop has returned (in tests, after the test ended
+	// and the next one set blip.Debugging).
+	select {
+	case <-runChan:
+		return
+	default:
+	}
 	if m.runChan != runChan {
 		blip.Debug("%s: stop called by %s for obsolete run (noop)", m.monitorId, caller)
 		return

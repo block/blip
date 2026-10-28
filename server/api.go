@@ -173,12 +173,37 @@ func (api *API) monitorsStart(w http.ResponseWriter, r *http.Request) {
 		return // monitorId() wrote error response
 	}
 	blip.Debug("start %s", monitorId)
-	if err := mon.Start(); err != nil {
+	// Start through the loader, not Monitor.Start, so the loader knows the
+	// monitor is running and doesn't start it while it's still stopping.
+	// Use the monitor's ID, not monitorId, which has CR and LF removed for
+	// logging and messages.
+	res, err := api.monitorLoader.TryStart(mon.MonitorId())
+	writeStartResult(w, monitorId, res, err)
+}
+
+// writeStartResult writes the response to POST /monitors/start for the result
+// of Loader.TryStart. monitorId is only for messages.
+func writeStartResult(w http.ResponseWriter, monitorId string, res monitor.StartResult, err error) {
+	if err == monitor.ErrMonitorNotLoaded {
+		// Removed by a reload after api.monitorId found it
+		http.Error(w, fmt.Sprintf("monitor %s not loaded", html.EscapeString(monitorId)), http.StatusNotFound)
+		return
+	}
+	if err != nil {
 		errMsg := html.EscapeString(fmt.Sprintf("Error starting monitor %s: %s", html.EscapeString(monitorId), err))
 		http.Error(w, errMsg, http.StatusConflict)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	switch res {
+	case monitor.START_PENDING:
+		http.Error(w, fmt.Sprintf("monitor %s is still stopping; it starts when it has stopped", html.EscapeString(monitorId)), http.StatusAccepted)
+	case monitor.START_RUNNING:
+		http.Error(w, fmt.Sprintf("Error starting monitor %s: already running", html.EscapeString(monitorId)), http.StatusConflict)
+	case monitor.START_DECLINED:
+		http.Error(w, fmt.Sprintf("Error starting monitor %s: declined by the StartMonitor plugin", html.EscapeString(monitorId)), http.StatusConflict)
+	default:
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (api *API) monitorsStop(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +213,14 @@ func (api *API) monitorsStop(w http.ResponseWriter, r *http.Request) {
 		return // monitorId() wrote error response
 	}
 	blip.Debug("stop %s", monitorId)
-	mon.Stop() // Stopy only returns nil
+	// Stop through the loader, not Monitor.Stop, so the loader knows the
+	// monitor is stopped and the wait for it to stop is bounded. Use the
+	// monitor's ID, not monitorId, which has CR and LF removed. The only
+	// error is ErrStopTimeout.
+	if err := api.monitorLoader.Stop(mon.MonitorId(), true); err != nil {
+		http.Error(w, fmt.Sprintf("monitor %s is still stopping", html.EscapeString(monitorId)), http.StatusAccepted)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -230,7 +262,9 @@ func (api *API) monitorId(w http.ResponseWriter, r *http.Request) (string, *moni
 		http.Error(w, fmt.Sprintf("monitor %s not loaded", html.EscapeString(monitorId)), http.StatusNotFound)
 		return "", nil, false
 	}
-	// Avoid code scanning alert "Log entries created from user input"
+	// Avoid code scanning alert "Log entries created from user input". The
+	// returned ID is only for logging and messages: use mon.MonitorId() to
+	// find the monitor again.
 	monitorId = strings.Replace(monitorId, "\n", "", -1)
 	monitorId = strings.Replace(monitorId, "\r", "", -1)
 	return monitorId, mon, true

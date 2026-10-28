@@ -43,6 +43,10 @@ Calling API endpoint [`/monitors/reload`]({{< ref "/api/monitors#post-monitorsre
 New monitors are started.
 Monitors that have been removed (no longer returned by the source) are unloaded (stopped and removed) from Blip.
 Monitors that have not change are not affected or restarted.
+A monitor stopped with [`/monitors/stop`]({{< ref "/api/monitors#post-monitorsstopidid" >}}) stays stopped until [`/monitors/start`]({{< ref "/api/monitors#post-monitorsstartidid" >}}), unless its config changes.
+
+Removed monitors are stopped in parallel.
+A reload waits for them to stop, but no longer than [`config.monitor-loader.stop-timeout`]({{< ref "/config/config-file#stop-timeout" >}}).
 
 ### Stop-loss
 

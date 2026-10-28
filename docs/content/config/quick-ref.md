@@ -38,6 +38,7 @@ monitor-loader:
     disable-auto: true
     disable-auto-root: true
   stop-loss: 50%
+  stop-timeout: 3s
 
 # ---------------------------------------------------------------------------
 # Monitor defaults

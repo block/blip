@@ -22,6 +22,7 @@ import (
 	sizetable "github.com/cashapp/blip/v2/metrics/size.table"
 	statusglobal "github.com/cashapp/blip/v2/metrics/status.global"
 	"github.com/cashapp/blip/v2/metrics/stmt.current"
+	stmtschema "github.com/cashapp/blip/v2/metrics/stmt.schema"
 	"github.com/cashapp/blip/v2/metrics/tls"
 	"github.com/cashapp/blip/v2/metrics/trx"
 	varglobal "github.com/cashapp/blip/v2/metrics/var.global"
@@ -418,6 +419,8 @@ func (f *factory) Make(domain string, args blip.CollectorFactoryArgs) (blip.Coll
 		return statusglobal.NewGlobal(args.DB), nil
 	case "stmt.current":
 		return stmt.NewCurrent(args.DB), nil
+	case "stmt.schema":
+		return stmtschema.NewSchema(args.DB), nil
 	case "tls":
 		return tls.NewTLS(args.DB), nil
 	case "trx":
@@ -451,6 +454,7 @@ var builtinCollectors = []string{
 	"size.table",
 	"status.global",
 	"stmt.current",
+	"stmt.schema",
 	"trx",
 	"tls",
 	"var.global",

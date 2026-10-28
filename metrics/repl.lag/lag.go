@@ -160,8 +160,10 @@ func (c *Lag) Help() blip.CollectorHelp {
 // writer option to pfs or blip; else the first level that collects lag, which
 // auto-detects the writer. Levels that don't set the writer, or set it to
 // auto, use that writer. It's an error if one level sets pfs and another sets
-// blip. The report-no-heartbeat, report-not-a-replica, and
-// default-channel-name options are per level.
+// blip. The writer and heartbeat reader options (table, source-id,
+// source-role, repl-check, network-latency) are read only from that level.
+// The report-no-heartbeat, report-not-a-replica, and default-channel-name
+// options are per level.
 //
 // If lag is collected from a Blip heartbeat, the returned cleanup func stops
 // the heartbeat reader; else it's nil. On error, Prepare stops the reader

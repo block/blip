@@ -189,11 +189,15 @@ func TestReader(t *testing.T) {
 	// the real lag (and wait time, which we ignore) that the real waiter
 	// returns to the reader.
 	hbChan := make(chan int64, 1)
+	done := make(chan struct{}) // closed when test returns, so a blocked send doesn't block Stop
 	realWaiter := heartbeat.SlowFastWaiter{NetworkLatency: 10 * time.Millisecond}
 	mockWaiter := mock.LagWaiter{
 		WaitFunc: func(now, then time.Time, f int, srcId string) (int64, time.Duration) {
 			lag, wait := realWaiter.Wait(now, then, f, srcId)
-			hbChan <- lag
+			select {
+			case hbChan <- lag:
+			case <-done:
+			}
 			return lag, wait
 		},
 	}
@@ -204,7 +208,8 @@ func TestReader(t *testing.T) {
 		Waiter:    mockWaiter,
 	})
 	hr.Start()
-	defer hr.Stop() // before ReadErrorWait is reset: Stop waits for the reader to return
+	defer hr.Stop()   // before ReadErrorWait is reset: Stop waits for the reader to return
+	defer close(done) // before Stop: unblocks the reader if it's sending to hbChan
 
 	timeout := time.After(5 * time.Second) // this whole test should take <1s
 

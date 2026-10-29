@@ -42,6 +42,8 @@ func TestLoaderStopLoss(t *testing.T) {
 		{name: "number above with new", stopLoss: "3", removed: 5, added: 1, stopped: true},
 		{name: "number replaced", stopLoss: "3", removed: 5, added: 5},
 		{name: "number changed", stopLoss: "3", changed: 5},
+		{name: "number at with changed", stopLoss: "3", removed: 3, changed: 2},
+		{name: "number above with changed", stopLoss: "3", removed: 4, changed: 2, stopped: true},
 		{name: "percent below", stopLoss: "30%", removed: 2},
 		{name: "percent at", stopLoss: "30%", removed: 3},
 		{name: "percent above", stopLoss: "30%", removed: 4, stopped: true},
@@ -51,6 +53,8 @@ func TestLoaderStopLoss(t *testing.T) {
 		{name: "percent above with new", stopLoss: "30%", removed: 5, added: 1, stopped: true},
 		{name: "percent replaced", stopLoss: "30%", removed: 5, added: 5},
 		{name: "percent changed", stopLoss: "30%", changed: 5},
+		{name: "percent at with changed", stopLoss: "30%", removed: 3, changed: 2},
+		{name: "percent above with changed", stopLoss: "30%", removed: 4, changed: 2, stopped: true},
 		{name: "disabled", stopLoss: "", removed: 10},
 	}
 	for _, tt := range tests {

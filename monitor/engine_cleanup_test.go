@@ -7,7 +7,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/metrics"
@@ -16,20 +15,11 @@ import (
 	"github.com/cashapp/blip/v2/test/mock"
 )
 
-const (
-	heartbeatReaderFunc    = "heartbeat.(*BlipReader).run"
-	heartbeatReaderTimeout = 5 * time.Second // > heartbeat.ReadTimeout: reader exits after an in-flight query
-)
-
 func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
-	_, db, err := test.Connection(test.DefaultMySQLVersion)
-	if err != nil {
-		if test.Build {
-			t.Skip("MySQL test fixture not running")
-		}
-		t.Fatal(err)
-	}
-	defer db.Close()
+	// Engine.Prepare only pings the database, and the repl.lag blip writer
+	// doesn't query it, so MySQL isn't needed
+	db := mock.PingDB()
+	t.Cleanup(func() { db.Close() }) // after the engines stop: cleanups run last-in, first-out
 
 	// repl.lag at two levels, like a plan where the slow level inherits
 	// domains from the fast level
@@ -46,39 +36,35 @@ func TestEnginePrepareStopDoesNotLeakHeartbeatReader(t *testing.T) {
 		},
 	}
 
-	// Count only readers started by this test: wait for readers stopped by
-	// earlier tests to exit
-	if got := test.WaitGoroutines(heartbeatReaderFunc, 0, heartbeatReaderTimeout); got != 0 {
-		t.Fatalf("%d heartbeat readers running before test, expected 0 (leaked by an earlier test?)", got)
-	}
+	// Count only readers started by this test
+	readers := test.NewGoroutines()
+	readers.Label()
 	for i := 0; i < 3; i++ {
 		engine := NewEngine(blip.ConfigMonitor{MonitorId: plan.MonitorId}, db)
+		t.Cleanup(engine.Stop) // if the test fails before Stop; a second Stop is a no-op
 		if err := engine.Prepare(context.Background(), plan, func() {}, func() {}); err != nil {
 			t.Fatal(err)
 		}
-		if got := test.WaitGoroutines(heartbeatReaderFunc, 1, heartbeatReaderTimeout); got != 1 {
+		if got := readers.Wait(test.HeartbeatReaderFunc, 1, test.HeartbeatReaderTimeout); got != 1 {
 			t.Fatalf("cycle %d: %d heartbeat readers running after Prepare, expected 1", i, got)
 		}
 		engine.Stop()
-		if got := test.WaitGoroutines(heartbeatReaderFunc, 0, heartbeatReaderTimeout); got != 0 {
+		if got := readers.Wait(test.HeartbeatReaderFunc, 0, test.HeartbeatReaderTimeout); got != 0 {
 			t.Fatalf("cycle %d: %d heartbeat readers running after Stop, expected 0", i, got)
 		}
 	}
 }
 
 func TestEnginePrepareErrorCleansUpPreparedCollectors(t *testing.T) {
-	_, db, err := test.Connection(test.DefaultMySQLVersion)
-	if err != nil {
-		if test.Build {
-			t.Skip("MySQL test fixture not running")
-		}
-		t.Fatal(err)
-	}
+	// Engine.Prepare only pings the database, and the mock collectors don't
+	// query it, so MySQL isn't needed
+	db := mock.PingDB()
 	defer db.Close()
 
 	// Two collectors. Domains are prepared in random order, so whichever is
-	// prepared second fails. Both return a cleanup func, which Prepare must
-	// call because it discards both collectors.
+	// prepared second fails. Prepare discards both collectors, so it must call
+	// the cleanup func of the first. The second returns a cleanup func with its
+	// error, which Prepare calls as a backstop (see blip.Collector.Prepare).
 	domains := []string{"test.cleanup-a", "test.cleanup-b"}
 	mux := &sync.Mutex{}
 	prepared := 0

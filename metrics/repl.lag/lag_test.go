@@ -7,8 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -121,25 +121,42 @@ func TestCollectWithAllSources(t *testing.T) {
 	}
 }
 
-const (
-	readerFunc    = "heartbeat.(*BlipReader).run"
-	readerTimeout = 5 * time.Second // > heartbeat.ReadTimeout: reader exits after an in-flight query
-)
-
-// stopReader stops the heartbeat reader, if any, when the test ends. Tests
-// that count reader goroutines require that earlier tests don't leak them.
+// stopReader stops the heartbeat reader, if any, when the test ends.
 func stopReader(t *testing.T, cleanup func()) {
 	if cleanup != nil {
 		t.Cleanup(cleanup)
 	}
 }
 
-// requireNoReaders waits for readers stopped by earlier tests to exit, so the
-// test can count only the readers that it starts.
-func requireNoReaders(t *testing.T) {
+// spyReader is a heartbeat reader that records whether it was stopped.
+type spyReader struct {
+	heartbeat.Reader
+	stopped atomic.Bool
+}
+
+func (r *spyReader) Stop() {
+	r.stopped.Store(true)
+	r.Reader.Stop()
+}
+
+// spyOnReader makes c wrap its heartbeat reader in a spyReader.
+func spyOnReader(c *Lag) {
+	c.newReader = func(args heartbeat.BlipReaderArgs) heartbeat.Reader {
+		return &spyReader{Reader: newBlipReader(args)}
+	}
+}
+
+// requireReaderStopped requires that Prepare made a reader and stopped it.
+// Counting goroutines isn't enough: the reader goroutine might not have
+// started yet.
+func requireReaderStopped(t *testing.T, c *Lag) {
 	t.Helper()
-	if got := test.WaitGoroutines(readerFunc, 0, readerTimeout); got != 0 {
-		t.Fatalf("%d heartbeat readers running before test, expected 0 (leaked by an earlier test?)", got)
+	spy, ok := c.lagReader.(*spyReader)
+	if !ok {
+		t.Fatalf("Prepare didn't make a heartbeat reader: %T", c.lagReader)
+	}
+	if !spy.stopped.Load() {
+		t.Error("Prepare didn't stop the heartbeat reader")
 	}
 }
 
@@ -172,21 +189,28 @@ func TestPrepareBlipAtMultipleLevelsReturnsReaderCleanup(t *testing.T) {
 	// Plans usually collect repl.lag at more than one level because levels
 	// inherit domains from lower levels. Prepare starts one reader for all
 	// levels, so it must return the cleanup func that stops that reader.
-	requireNoReaders(t)
-
 	c := NewLag(unreachableDB(t))
+	// Stop the reader if the test fails before cleanup, even if Prepare
+	// returned a nil cleanup func. Stop can be called more than once.
+	t.Cleanup(func() {
+		if c.lagReader != nil {
+			c.lagReader.Stop()
+		}
+	})
+	readers := test.NewGoroutines()
+	readers.Label()
 	cleanup, err := c.Prepare(context.Background(), blipPlan("fast", "medium", "slow"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := test.WaitGoroutines(readerFunc, 1, readerTimeout); got != 1 {
+	if got := readers.Wait(test.HeartbeatReaderFunc, 1, test.HeartbeatReaderTimeout); got != 1 {
 		t.Fatalf("%d heartbeat readers running after Prepare, expected 1", got)
 	}
 	if cleanup == nil {
 		t.Fatal("Prepare returned nil cleanup func, so the heartbeat reader can't be stopped")
 	}
 	cleanup()
-	if got := test.WaitGoroutines(readerFunc, 0, readerTimeout); got != 0 {
+	if got := readers.Wait(test.HeartbeatReaderFunc, 0, test.HeartbeatReaderTimeout); got != 0 {
 		t.Errorf("%d heartbeat readers running after cleanup, expected 0", got)
 	}
 }
@@ -194,15 +218,18 @@ func TestPrepareBlipAtMultipleLevelsReturnsReaderCleanup(t *testing.T) {
 func TestPrepareBlipErrorStopsReader(t *testing.T) {
 	// The reader starts before the repl check is verified, which fails because
 	// the database is unreachable. Prepare must stop the reader it started.
-	requireNoReaders(t)
-
 	c := NewLag(unreachableDB(t))
+	spyOnReader(c)
 	plan := blipPlan("kpi")
 	plan.Levels["kpi"].Collect[DOMAIN].Options[OPT_REPL_CHECK] = "read_only"
-	if _, err := c.Prepare(context.Background(), plan); err == nil {
+	readers := test.NewGoroutines()
+	readers.Label()
+	_, err := c.Prepare(context.Background(), plan)
+	if err == nil {
 		t.Fatal("Prepare returned nil error, expected repl check error")
 	}
-	if got := test.WaitGoroutines(readerFunc, 0, readerTimeout); got != 0 {
+	requireReaderStopped(t, c)
+	if got := readers.Wait(test.HeartbeatReaderFunc, 0, test.HeartbeatReaderTimeout); got != 0 {
 		t.Errorf("%d heartbeat readers running after Prepare error, expected 0", got)
 	}
 }
@@ -248,10 +275,15 @@ func TestPrepareBlipAtMultipleLevelsDropsNoHeartbeat(t *testing.T) {
 					level.Collect[DOMAIN].Options[OPT_REPORT_NO_HEARTBEAT] = report
 				}
 			}
+			readers := test.NewGoroutines()
+			readers.Label()
 			cleanup, err := c.Prepare(context.Background(), plan)
-			stopReader(t, cleanup)
+			stopReader(t, cleanup) // backstop if the test fails before it stops the reader
 			if err != nil {
 				t.Fatal(err)
+			}
+			if got := readers.Wait(test.HeartbeatReaderFunc, 1, test.HeartbeatReaderTimeout); got != 1 {
+				t.Fatalf("%d heartbeat readers running after Prepare, expected 1 for all levels", got)
 			}
 			for level := range plan.Levels {
 				metrics, err := c.Collect(context.Background(), level)
@@ -265,6 +297,10 @@ func TestPrepareBlipAtMultipleLevelsDropsNoHeartbeat(t *testing.T) {
 				} else if len(metrics) != 0 {
 					t.Errorf("%s: got %+v, expected no metrics (dropped)", level, metrics)
 				}
+			}
+			cleanup() // stopReader calls it again, which is a no-op
+			if got := readers.Wait(test.HeartbeatReaderFunc, 0, test.HeartbeatReaderTimeout); got != 0 {
+				t.Errorf("%d heartbeat readers running after cleanup, expected 0", got)
 			}
 		})
 	}

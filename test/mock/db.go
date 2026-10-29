@@ -78,3 +78,43 @@ func (r contextRows) Next([]driver.Value) error {
 	<-r.ctx.Done()
 	return r.ctx.Err()
 }
+
+// PingDB returns a *sql.DB for tests that need a database only to connect,
+// like monitor.Engine.Prepare, without a running MySQL instance. Pings
+// succeed and queries fail right away, so a heartbeat reader that uses it
+// retries without blocking.
+func PingDB() *sql.DB {
+	return sql.OpenDB(pingConnector{})
+}
+
+var errPingDB = errors.New("mock.PingDB: queries not supported")
+
+type pingConnector struct{}
+
+func (pingConnector) Connect(context.Context) (driver.Conn, error) {
+	return pingConn{}, nil
+}
+
+func (pingConnector) Driver() driver.Driver {
+	return contextDriver{}
+}
+
+type pingConn struct{}
+
+var _ driver.Pinger = pingConn{}
+
+func (pingConn) Ping(context.Context) error {
+	return nil
+}
+
+func (pingConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errPingDB
+}
+
+func (pingConn) Close() error {
+	return nil
+}
+
+func (pingConn) Begin() (driver.Tx, error) {
+	return nil, errPingDB
+}

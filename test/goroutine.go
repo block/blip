@@ -107,8 +107,10 @@ func wait(count func() int, n int, timeout time.Duration) int {
 //	...
 //
 // with a blank line between stacks. It panics if it doesn't find its own
-// stack (with the label, if id is set) or if a counted stack might be
+// stack (with the label, if id is set) or if a stack without fn might be
 // truncated, because then it might count 0 for running goroutines.
+// Truncation drops the outer frames, like heartbeat.(*BlipReader).run, so a
+// truncated stack doesn't contain fn.
 func countGoroutines(fn, id string) int {
 	var buf bytes.Buffer
 	pprof.Lookup("goroutine").WriteTo(&buf, 1)

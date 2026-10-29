@@ -190,6 +190,13 @@ func TestPrepareBlipAtMultipleLevelsReturnsReaderCleanup(t *testing.T) {
 	// inherit domains from lower levels. Prepare starts one reader for all
 	// levels, so it must return the cleanup func that stops that reader.
 	c := NewLag(unreachableDB(t))
+	// Stop the reader if the test fails before cleanup, even if Prepare
+	// returned a nil cleanup func. Stop can be called more than once.
+	t.Cleanup(func() {
+		if c.lagReader != nil {
+			c.lagReader.Stop()
+		}
+	})
 	readers := test.NewGoroutines()
 	readers.Label()
 	cleanup, err := c.Prepare(context.Background(), blipPlan("fast", "medium", "slow"))

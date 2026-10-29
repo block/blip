@@ -14,6 +14,7 @@ import (
 	"github.com/cashapp/blip/v2"
 	"github.com/cashapp/blip/v2/aws"
 	"github.com/cashapp/blip/v2/dbconn"
+	"github.com/cashapp/blip/v2/event"
 	"github.com/cashapp/blip/v2/monitor"
 	"github.com/cashapp/blip/v2/plan"
 	"github.com/cashapp/blip/v2/test/mock"
@@ -31,34 +32,52 @@ func TestLoaderStopLoss(t *testing.T) {
 		removed  int
 		added    int
 		changed  int
-		stopped  bool // expect ErrStopLoss
+		stopped  bool   // expect ErrStopLoss
+		msg      string // expected monitors-stoploss event message
 	}{
 		{name: "number below", stopLoss: "3", removed: 2},
 		{name: "number at", stopLoss: "3", removed: 3},
-		{name: "number above", stopLoss: "3", removed: 4, stopped: true},
-		{name: "number all", stopLoss: "3", removed: 10, stopped: true},
+		{name: "number above", stopLoss: "3", removed: 4, stopped: true, msg: "before: 10; now: 6; lost 4 > limit 3"},
+		{name: "number all", stopLoss: "3", removed: 10, stopped: true, msg: "before: 10; now: 0; lost 10 > limit 3"},
 		{name: "number below with new", stopLoss: "3", removed: 3, added: 1},
 		{name: "number at with new", stopLoss: "3", removed: 4, added: 1},
-		{name: "number above with new", stopLoss: "3", removed: 5, added: 1, stopped: true},
+		{name: "number above with new", stopLoss: "3", removed: 5, added: 1, stopped: true, msg: "before: 10; now: 6; lost 4 > limit 3"},
 		{name: "number replaced", stopLoss: "3", removed: 5, added: 5},
 		{name: "number changed", stopLoss: "3", changed: 5},
 		{name: "number at with changed", stopLoss: "3", removed: 3, changed: 2},
-		{name: "number above with changed", stopLoss: "3", removed: 4, changed: 2, stopped: true},
+		{name: "number above with changed", stopLoss: "3", removed: 4, changed: 2, stopped: true, msg: "before: 10; now: 6; lost 4 > limit 3"},
 		{name: "percent below", stopLoss: "30%", removed: 2},
 		{name: "percent at", stopLoss: "30%", removed: 3},
-		{name: "percent above", stopLoss: "30%", removed: 4, stopped: true},
-		{name: "percent all", stopLoss: "30%", removed: 10, stopped: true},
+		{name: "percent above", stopLoss: "30%", removed: 4, stopped: true, msg: "before: 10; now: 6; lost 40.0% > limit 30%"},
+		{name: "percent all", stopLoss: "30%", removed: 10, stopped: true, msg: "before: 10; now: 0; lost 100.0% > limit 30%"},
 		{name: "percent below with new", stopLoss: "30%", removed: 3, added: 1},
 		{name: "percent at with new", stopLoss: "30%", removed: 4, added: 1},
-		{name: "percent above with new", stopLoss: "30%", removed: 5, added: 1, stopped: true},
+		{name: "percent above with new", stopLoss: "30%", removed: 5, added: 1, stopped: true, msg: "before: 10; now: 6; lost 40.0% > limit 30%"},
 		{name: "percent replaced", stopLoss: "30%", removed: 5, added: 5},
 		{name: "percent changed", stopLoss: "30%", changed: 5},
 		{name: "percent at with changed", stopLoss: "30%", removed: 3, changed: 2},
-		{name: "percent above with changed", stopLoss: "30%", removed: 4, changed: 2, stopped: true},
+		{name: "percent above with changed", stopLoss: "30%", removed: 4, changed: 2, stopped: true, msg: "before: 10; now: 6; lost 40.0% > limit 30%"},
 		{name: "disabled", stopLoss: "", removed: 10},
 	}
+	var evmux sync.Mutex
+	var stoplossEvents []event.Event
+	event.Subscribe(mock.EventReceiver{
+		RecvFunc: func(e event.Event) {
+			if e.Event == event.MONITORS_STOPLOSS {
+				evmux.Lock()
+				stoplossEvents = append(stoplossEvents, e)
+				evmux.Unlock()
+			}
+		},
+	})
+	t.Cleanup(event.RemoveSubscribers)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			evmux.Lock()
+			stoplossEvents = nil
+			evmux.Unlock()
+
 			var mux sync.Mutex
 			configs := make([]blip.ConfigMonitor, nBefore)
 			for i := range configs {
@@ -76,6 +95,10 @@ func TestLoaderStopLoss(t *testing.T) {
 					ml.Unload(mon.MonitorId(), true)
 				}
 			}()
+			loaded := map[string]*monitor.Monitor{}
+			for _, mon := range ml.Monitors() {
+				loaded[mon.MonitorId()] = mon
+			}
 
 			// Remove the first monitors, change the next ones, and add new ones.
 			mux.Lock()
@@ -90,12 +113,24 @@ func TestLoaderStopLoss(t *testing.T) {
 			mux.Unlock()
 
 			err := ml.Load(context.Background())
+			evmux.Lock()
+			events := stoplossEvents
+			evmux.Unlock()
 			if tt.stopped {
 				assert.ErrorIs(t, err, monitor.ErrStopLoss)
+				// No monitor is removed, replaced, or added.
 				assert.Equal(t, uint(nBefore), ml.Count(), "monitors changed after ErrStopLoss")
+				for id, mon := range loaded {
+					assert.Same(t, mon, ml.Monitor(id), "monitor %s replaced after ErrStopLoss", id)
+				}
+				if assert.Len(t, events, 1) {
+					assert.True(t, events[0].Error)
+					assert.Equal(t, tt.msg, events[0].Message)
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, uint(nBefore-tt.removed+tt.added), ml.Count())
+				assert.Empty(t, events)
 			}
 		})
 	}

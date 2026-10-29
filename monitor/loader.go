@@ -312,12 +312,12 @@ func (ml *Loader) loadAndUnload(ctx context.Context) ([]*stoppingMonitor, error)
 	// a big drop in the number because it might be a false-positive that will
 	// set off alarms when a bunch of metrics fail to report.
 	//
-	// The loss is the net drop in the number of monitors: before is the number
-	// loaded now, and now is the number that would be loaded after this change.
-	// New monitors offset removed ones; changed monitors are in both diff.added
-	// and diff.changed, so they don't change the number. Stop-loss is a number
-	// or a percent, not both (see blip.StopLoss), and the loss must be greater
-	// than the limit to trigger it.
+	// The loss is the net drop in the number of monitors: nBefore is the number
+	// currently loaded, and nNow is the number that would be loaded after this
+	// change. New monitors offset removed ones; changed monitors are in both
+	// diff.added and diff.changed, so they don't change the number. Stop-loss
+	// is a number or a percent, not both (see blip.StopLoss), and the loss must
+	// be greater than the limit to trigger it.
 	nBefore := len(ml.repo)
 	nNow := nBefore - len(diff.removed) + len(diff.added) - len(diff.changed)
 	if nNow < nBefore {

@@ -178,7 +178,9 @@ The `local` subsection has only two variables:
 |**Valid values**|&bull;&nbsp;"N%" (percentage) where N is an integer between 0 and 100 (exclusive)<br>&bull;&nbsp;"N" where N is an integer greater than 0|
 |**Default value**||
 
-The `stop-loss` variable enables the [stop-lost feature]({{< ref "/monitors/loading#stop-loss" >}}).
+The `stop-loss` variable enables the [stop-loss feature]({{< ref "/monitors/loading#stop-loss" >}}).
+A reload fails if the net drop in the number of monitors is greater than `N` monitors, or greater than `N` percent of the monitors loaded before the reload.
+For example, with 10 monitors loaded and `stop-loss: 30%`, a reload can drop 3 monitors but not 4.
 
 ##### `stop-timeout`
 

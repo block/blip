@@ -54,4 +54,10 @@ Stop-loss prevents reloading from dropping too many MySQL instances due to unrel
 For example, maybe the `LoadMonitors` plugin has a bug that causes it to return zero monitors when there are really 10 monitors.
 Stop-loss would prevent Blip from unloading all monitors, which could have adverse side effects for visibility and alerting.
 
+Stop-loss measures the net drop in the number of monitors: the number loaded before the reload minus the number that would be loaded after it.
+New monitors offset removed monitors, and changed monitors don't count.
+For example, with 10 monitors loaded, a reload that removes 4 monitors and adds 1 drops 3 monitors.
+If the drop is greater than the stop-loss limit, the reload fails and the loaded monitors are not changed.
+A drop equal to the limit is allowed.
+
 Set [`config.monitor-loader.stop-loss`]({{< ref "/config/config-file#stop-loss" >}}) to enable.

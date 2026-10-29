@@ -161,6 +161,7 @@ Then, when `Collect` is called, the collector quickly returns the latest value(s
 
 Using this method, the collector should return a cleanup function (callback) from `Prepare`.
 Blip calls collector cleanup functions if/when a monitor is stopped or restarted.
+If `Prepare` returns an error, Blip discards the collector, so `Prepare` must stop any background threads that it started before it returns.
 
 ### ErrMore
 

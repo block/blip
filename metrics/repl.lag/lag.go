@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -33,7 +34,8 @@ const (
 type Lag struct {
 	db                          *sql.DB
 	lagReader                   heartbeat.Reader
-	stopReader                  func() // stops lagReader; returned by Prepare as cleanup
+	stopReader                  func()                                          // stops lagReader; returned by Prepare as cleanup
+	newReader                   func(heartbeat.BlipReaderArgs) heartbeat.Reader // tests replace it to inspect the args
 	lagWriterIn                 map[string]string
 	dropNoHeartbeat             map[string]bool
 	dropNotAReplica             map[string]bool
@@ -45,9 +47,14 @@ type Lag struct {
 
 var _ blip.Collector = &Lag{}
 
+func newBlipReader(args heartbeat.BlipReaderArgs) heartbeat.Reader {
+	return heartbeat.NewBlipReader(args)
+}
+
 func NewLag(db *sql.DB) *Lag {
 	return &Lag{
 		db:                          db,
+		newReader:                   newBlipReader,
 		lagWriterIn:                 map[string]string{},
 		dropNoHeartbeat:             map[string]bool{},
 		dropNotAReplica:             map[string]bool{},
@@ -149,11 +156,19 @@ func (c *Lag) Help() blip.CollectorHelp {
 // domain collects only one metric (repl.lag.current), there's no need to
 // collect different metrics at different frequencies.
 //
+// One level sets up the writer: the first level, by name, that sets the
+// writer option to pfs or blip; else the first level that collects lag, which
+// auto-detects the writer. Levels that don't set the writer, or set it to
+// auto, use that writer. It's an error if one level sets pfs and another sets
+// blip. The writer and its options (repl-check, table, source-id,
+// source-role, network-latency) are read only from that level.
+// The report-no-heartbeat, report-not-a-replica, and default-channel-name
+// options are per level.
+//
 // If lag is collected from a Blip heartbeat, the returned cleanup func stops
-// the heartbeat reader; else it's nil.
+// the heartbeat reader; else it's nil. On error, Prepare stops the reader
+// and returns a nil cleanup func, as required by blip.Collector.
 func (c *Lag) Prepare(ctx context.Context, plan blip.Plan) (cleanup func(), err error) {
-	configured := "" // set after first level to its writer value
-
 	// The engine discards this collector if Prepare fails, so stop the
 	// reader if it was started before the error.
 	defer func() {
@@ -162,67 +177,82 @@ func (c *Lag) Prepare(ctx context.Context, plan blip.Plan) (cleanup func(), err 
 		}
 	}()
 
-LEVEL:
+	// Levels that collect lag, sorted so the result doesn't depend on map order
+	levels := []string{}
 	for levelName, level := range plan.Levels {
-		dom, ok := level.Collect[DOMAIN]
-		if !ok {
-			continue LEVEL // not collected in this level
+		if _, ok := level.Collect[DOMAIN]; ok {
+			levels = append(levels, levelName)
 		}
+	}
+	if len(levels) == 0 {
+		return nil, nil
+	}
+	sort.Strings(levels)
 
-		writer := dom.Options[OPT_WRITER]
-
-		// Already configured? If yes and same writer, that's ok and expected
-		// (lag collected at multiple levels). But if writer is different, that's
-		// and error.
-		if configured != "" {
-			if configured != writer {
-				return nil, fmt.Errorf("different writer configuration: %s != %s", configured, writer)
-			}
-			c.lagWriterIn[levelName] = writer // collect at this level
-			continue LEVEL
-		}
-
-		blip.Debug("repl.lag: config from level %s", levelName)
-		switch writer {
-		case LAG_WRITER_PFS:
-			// Try collecting, discard metrics
-			if _, err = c.collectPFS(ctx, levelName); err != nil {
-				return nil, err
-			}
-		case LAG_WRITER_BLIP:
-			cleanup, err = c.prepareBlip(levelName, plan.MonitorId, plan.Name, dom.Options)
-			if err != nil {
-				return nil, err
-			}
-		case "auto", "": // default
-			// Try PFS first
-			if _, err = c.collectPFS(ctx, levelName); err == nil {
-				blip.Debug("repl.lag auto-detected PFS")
-				writer = LAG_WRITER_PFS
-			} else {
-				// then Blip HeartBeat
-				if cleanup, err = c.prepareBlip(levelName, plan.MonitorId, plan.Name, dom.Options); err == nil {
-					blip.Debug("repl.lag auto-detected Blip heartbeat")
-					writer = LAG_WRITER_BLIP
-				} else {
-					return nil, fmt.Errorf("failed to auto-detect source, set %s manually", OPT_WRITER)
-				}
-			}
+	// Find the level that sets up the writer
+	configLevel := levels[0]
+	writer := "auto"
+	for _, levelName := range levels {
+		opt := plan.Levels[levelName].Collect[DOMAIN].Options[OPT_WRITER]
+		switch opt {
+		case "", "auto":
+			continue
+		case LAG_WRITER_PFS, LAG_WRITER_BLIP:
 		default:
-			return nil, fmt.Errorf("invalid lag writer: %q; valid values: auto, pfs, blip", writer)
+			return nil, fmt.Errorf("invalid lag writer: %q; valid values: auto, pfs, blip", opt)
 		}
-
-		c.lagWriterIn[levelName] = writer // collect at this level
-
-		c.dropNotAReplica[levelName] = !blip.Bool(dom.Options[OPT_REPORT_NOT_A_REPLICA])
-		c.defaultChannelNameOverrides[levelName] = dom.Options[OPT_DEFAULT_CHANNEL_NAME]
-		if err := c.verifyReplCheck(ctx, dom.Options[OPT_REPL_CHECK]); err != nil {
-			return nil, err
+		if writer == "auto" {
+			configLevel = levelName
+			writer = opt
+		} else if opt != writer {
+			return nil, fmt.Errorf("different writer configuration: %s at level %s != %s at level %s", writer, configLevel, opt, levelName)
 		}
-		c.replCheck = dom.Options[OPT_REPL_CHECK]
 	}
 
-	return cleanup, nil
+	if writer, err = c.configure(ctx, configLevel, plan, writer, plan.Levels[configLevel].Collect[DOMAIN].Options); err != nil {
+		return nil, err
+	}
+
+	for _, levelName := range levels {
+		options := plan.Levels[levelName].Collect[DOMAIN].Options
+		c.lagWriterIn[levelName] = writer // collect at this level
+		c.dropNoHeartbeat[levelName] = !blip.Bool(options[OPT_REPORT_NO_HEARTBEAT])
+		c.dropNotAReplica[levelName] = !blip.Bool(options[OPT_REPORT_NOT_A_REPLICA])
+		c.defaultChannelNameOverrides[levelName] = options[OPT_DEFAULT_CHANNEL_NAME]
+	}
+
+	return c.stopReader, nil
+}
+
+// configure sets up the writer from the options of one level. It returns the
+// writer, which is never auto.
+func (c *Lag) configure(ctx context.Context, levelName string, plan blip.Plan, writer string, options map[string]string) (string, error) {
+	blip.Debug("repl.lag: config from level %s", levelName)
+	switch writer {
+	case LAG_WRITER_PFS:
+		// Try collecting, discard metrics
+		if _, err := c.collectPFS(ctx, levelName); err != nil {
+			return "", err
+		}
+	case LAG_WRITER_BLIP:
+		c.prepareBlip(levelName, plan.MonitorId, plan.Name, options)
+	default: // auto
+		// Try PFS first, then Blip heartbeat
+		if _, err := c.collectPFS(ctx, levelName); err == nil {
+			blip.Debug("repl.lag auto-detected PFS")
+			writer = LAG_WRITER_PFS
+		} else {
+			c.prepareBlip(levelName, plan.MonitorId, plan.Name, options)
+			blip.Debug("repl.lag auto-detected Blip heartbeat")
+			writer = LAG_WRITER_BLIP
+		}
+	}
+
+	if err := c.verifyReplCheck(ctx, options[OPT_REPL_CHECK]); err != nil {
+		return "", err
+	}
+	c.replCheck = options[OPT_REPL_CHECK]
+	return writer, nil
 }
 
 func (c *Lag) verifyReplCheck(ctx context.Context, variable string) error {
@@ -253,14 +283,11 @@ func (c *Lag) Collect(ctx context.Context, levelName string) ([]blip.MetricValue
 // Internal methods
 // //////////////////////////////////////////////////////////////////////////
 
-func (c *Lag) prepareBlip(levelName string, monitorID string, planName string, options map[string]string) (func(), error) {
-	// Prepare calls this func for each level that collects lag. Return the
-	// same cleanup func for every level, else the reader is never stopped.
+// prepareBlip starts the heartbeat reader. Only 1 reader per collector.
+func (c *Lag) prepareBlip(levelName string, monitorID string, planName string, options map[string]string) {
 	if c.lagReader != nil {
-		return c.stopReader, nil
+		return
 	}
-
-	c.dropNoHeartbeat[levelName] = !blip.Bool(options[OPT_REPORT_NO_HEARTBEAT])
 
 	table := options[OPT_HEARTBEAT_TABLE]
 	if table == "" {
@@ -275,14 +302,13 @@ func (c *Lag) prepareBlip(levelName string, monitorID string, planName string, o
 			netLatency = time.Duration(n) * time.Millisecond
 		}
 	}
-	// Only 1 reader per plan
-	c.lagReader = heartbeat.NewBlipReader(heartbeat.BlipReaderArgs{
+	c.lagReader = c.newReader(heartbeat.BlipReaderArgs{
 		MonitorId:  monitorID,
 		DB:         c.db,
 		Table:      table,
 		SourceId:   options[OPT_HEARTBEAT_SOURCE_ID],
 		SourceRole: options[OPT_HEARTBEAT_SOURCE_ROLE],
-		ReplCheck:  c.replCheck,
+		ReplCheck:  options[OPT_REPL_CHECK], // not c.replCheck: it's set after the reader starts
 		Waiter: heartbeat.SlowFastWaiter{
 			MonitorId:      monitorID,
 			NetworkLatency: netLatency,
@@ -290,12 +316,10 @@ func (c *Lag) prepareBlip(levelName string, monitorID string, planName string, o
 	})
 	go c.lagReader.Start()
 	blip.Debug("%s: started reader: %s/%s (network latency: %s)", monitorID, planName, levelName, netLatency)
-	c.lagWriterIn[levelName] = LAG_WRITER_BLIP
 	c.stopReader = func() {
 		blip.Debug("%s: stopping reader", monitorID)
 		c.lagReader.Stop()
 	}
-	return c.stopReader, nil
 }
 
 func (c *Lag) collectBlip(ctx context.Context, levelName string) ([]blip.MetricValue, error) {

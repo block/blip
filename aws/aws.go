@@ -4,7 +4,6 @@ package aws
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -14,6 +13,20 @@ import (
 
 	"github.com/cashapp/blip/v2"
 )
+
+// regionError is returned when AWS region auto-detection fails. It keeps the
+// IMDS error so callers can inspect it with errors.Is and errors.As.
+type regionError struct {
+	err error
+}
+
+func (e regionError) Error() string {
+	return "cannot auto-detect AWS region (EC2 IMDS query failed)"
+}
+
+func (e regionError) Unwrap() error {
+	return e.err
+}
 
 type ConfigFactory struct {
 	region string
@@ -27,7 +40,7 @@ func (f *ConfigFactory) Make(ba blip.AWS, endpoint string) (aws.Config, error) {
 		ba.Region, err = Region(ctx)
 		if err != nil {
 			blip.Debug("cannot auto-detect AWS region: %s", err)
-			return aws.Config{}, fmt.Errorf("cannot auto-detect AWS region (EC2 IMDS query failed)")
+			return aws.Config{}, regionError{err: err}
 		}
 		if f.region == "" {
 			blip.Debug("set factory region to %s", ba.Region)

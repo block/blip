@@ -5,6 +5,7 @@ package dbconn
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,13 +86,54 @@ func TestMakeCredentialTimeoutOption(t *testing.T) {
 	}
 }
 
-func TestMakeCredentialTimeoutDisabled(t *testing.T) {
-	awscfg := slowCredentialsConfig(t, 700*time.Millisecond)
-	f := NewConnFactory(testAWSConfigFactory{cfg: awscfg}, nil, WithCredentialTimeout(0))
-
-	db, _, err := f.Make(passwordSecretMonitor())
-	if err != nil {
-		t.Fatalf("got error %s, expected nil", err)
+func TestCredentialContext(t *testing.T) {
+	tests := []struct {
+		name           string
+		opts           []ConnFactoryOption
+		expectDeadline time.Duration // 0: no deadline
+	}{
+		{"default", nil, DefaultCredentialTimeout},
+		{"option", []ConnFactoryOption{WithCredentialTimeout(5 * time.Second)}, 5 * time.Second},
+		{"disabled", []ConnFactoryOption{WithCredentialTimeout(0)}, 0},
 	}
-	db.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewConnFactory(nil, nil, tt.opts...)
+			t0 := time.Now()
+			ctx, cancel, err := f.credentialContext()
+			if err != nil {
+				t.Fatalf("got error %s, expected nil", err)
+			}
+			defer cancel()
+			deadline, ok := ctx.Deadline()
+			if tt.expectDeadline == 0 {
+				if ok {
+					t.Errorf("got deadline in %s, expected no deadline", deadline.Sub(t0))
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("got no deadline, expected deadline in %s", tt.expectDeadline)
+			}
+			if d := deadline.Sub(t0); d < tt.expectDeadline-time.Second || d > tt.expectDeadline+time.Second {
+				t.Errorf("got deadline in %s, expected about %s", d, tt.expectDeadline)
+			}
+		})
+	}
+}
+
+func TestMakeCredentialTimeoutNegative(t *testing.T) {
+	f := NewConnFactory(nil, nil, WithCredentialTimeout(-time.Second))
+	db, _, err := f.Make(blip.ConfigMonitor{
+		MonitorId: "m1",
+		Hostname:  "127.0.0.1:33997",
+		Username:  "root",
+	})
+	if err == nil {
+		db.Close()
+		t.Fatal("got nil error, expected invalid credential timeout")
+	}
+	if !strings.Contains(err.Error(), "invalid credential timeout") {
+		t.Errorf("got error %q, expected invalid credential timeout", err)
+	}
 }

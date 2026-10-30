@@ -33,7 +33,7 @@ func (s Secret) GetSecret(ctx context.Context) (map[string]interface{}, error) {
 
 	var v map[string]interface{}
 	if err := json.Unmarshal(payload, &v); err != nil {
-		return nil, fmt.Errorf("cannot decode secret string as map[string]interface{}: %s", err)
+		return nil, fmt.Errorf("cannot decode secret string as map[string]interface{}: %w", err)
 	}
 	if v == nil {
 		return nil, fmt.Errorf("secret value is 'null' literal")
@@ -49,7 +49,7 @@ func (s Secret) GetSecretPayload(ctx context.Context) ([]byte, error) {
 
 	sv, err := s.client.GetSecretValue(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("Secrets Manager API error: %s", err)
+		return nil, fmt.Errorf("Secrets Manager API error: %w", err)
 	}
 	name := ""
 	if sv.Name != nil {

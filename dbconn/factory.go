@@ -31,11 +31,19 @@ var rdsAddr = regexp.MustCompile(`rds\.amazonaws\.com(:\d+)?$`)
 // strip the port suffix before passing the hostname to LoadTLS.
 var portSuffix = regexp.MustCompile(`:\d+$`)
 
+// DefaultCredentialTimeout bounds how long Make waits for the first
+// credentials. It's long because the first call to an AWS source (Secrets
+// Manager or IAM auth) might have to fetch AWS credentials, for example EKS
+// IRSA AssumeRoleWithWebIdentity plus a cross-account AssumeRole, which can
+// take several seconds. Use WithCredentialTimeout to change it.
+const DefaultCredentialTimeout = 30 * time.Second
+
 // factory is the internal implementation of blip.DbFactory.
 type factory struct {
 	awsConfig            blip.AWSConfigFactory
 	modifyDB             func(*sql.DB, string)
 	passwordSecretParser blip.PasswordSecretParser
+	credentialTimeout    time.Duration
 }
 
 // ConnFactoryOption configures the default MySQL connection factory.
@@ -49,12 +57,23 @@ func WithPasswordSecretParser(parser blip.PasswordSecretParser) ConnFactoryOptio
 	}
 }
 
+// WithCredentialTimeout sets how long Make waits for the credentials reload
+// func to return the first credentials. The default is DefaultCredentialTimeout.
+// Zero or less disables the timeout. It does not affect credential reloads
+// by the mysql-hotswap-dsn driver, which use the connect context.
+func WithCredentialTimeout(d time.Duration) ConnFactoryOption {
+	return func(f *factory) {
+		f.credentialTimeout = d
+	}
+}
+
 // NewConnFactory returns a blip.NewConnFactory that connects to MySQL.
 // This is the only blip.NewConnFactor. It is created in Server.Defaults.
 func NewConnFactory(awsConfig blip.AWSConfigFactory, modifyDB func(*sql.DB, string), opts ...ConnFactoryOption) factory {
 	f := factory{
-		awsConfig: awsConfig,
-		modifyDB:  modifyDB,
+		awsConfig:         awsConfig,
+		modifyDB:          modifyDB,
+		credentialTimeout: DefaultCredentialTimeout,
 	}
 	for _, opt := range opts {
 		opt(&f)
@@ -128,8 +147,12 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	// Test the credentials reload func, i.e. get the current credentials, which
 	// might just be a static credentials in the Blip config file or another file,
 	// but it could be something dynamic like an Amazon IAM auth token.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	ctx := context.Background()
+	if f.credentialTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, f.credentialTimeout)
+		defer cancel()
+	}
 	credentials, err := credentialFunc(ctx)
 	if err != nil {
 		return nil, "", err

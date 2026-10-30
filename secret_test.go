@@ -4,6 +4,8 @@ package blip_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/cashapp/blip/v2"
@@ -85,5 +87,13 @@ func TestDefaultPasswordSecretParserNilCredentials(t *testing.T) {
 	err := blip.DefaultPasswordSecretParser(context.Background(), blip.ConfigMonitor{}, []byte(`{}`), nil)
 	if err == nil {
 		t.Fatal("got nil error, expected non-nil error")
+	}
+}
+
+func TestDefaultPasswordSecretParserWrapsDecodeError(t *testing.T) {
+	err := blip.DefaultPasswordSecretParser(context.Background(), blip.ConfigMonitor{}, []byte(`not-json`), &blip.DbCredentials{})
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Errorf("errors.As(%v, *json.SyntaxError) = false, expected true", err)
 	}
 }

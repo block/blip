@@ -28,6 +28,10 @@ func (e regionError) Unwrap() error {
 	return e.err
 }
 
+// imdsOptions configures the IMDS client that Region uses. Tests set it to use
+// a local IMDS server.
+var imdsOptions = imds.Options{}
+
 type ConfigFactory struct {
 	region string
 }
@@ -73,7 +77,7 @@ func (f *ConfigFactory) Make(ba blip.AWS, endpoint string) (aws.Config, error) {
 // If the region cannot be detect, it returns an empty string.
 func Region(ctx context.Context) (string, error) {
 	blip.Debug("auto-detect AWS region from IMDS")
-	client := imds.New(imds.Options{})
+	client := imds.New(imdsOptions)
 	ec2, err := client.GetInstanceIdentityDocument(ctx, &imds.GetInstanceIdentityDocumentInput{})
 	if err != nil {
 		return "", err

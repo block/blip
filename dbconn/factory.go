@@ -31,11 +31,23 @@ var rdsAddr = regexp.MustCompile(`rds\.amazonaws\.com(:\d+)?$`)
 // strip the port suffix before passing the hostname to LoadTLS.
 var portSuffix = regexp.MustCompile(`:\d+$`)
 
+// DefaultCredentialTimeout bounds how long Make waits for the first
+// credentials. It's long because the first call to an AWS source (Secrets
+// Manager or IAM auth) might have to fetch AWS credentials, for example EKS
+// IRSA AssumeRoleWithWebIdentity plus a cross-account AssumeRole, which can
+// take several seconds. Use WithCredentialTimeout to change it.
+const DefaultCredentialTimeout = 30 * time.Second
+
 // factory is the internal implementation of blip.DbFactory.
 type factory struct {
 	awsConfig            blip.AWSConfigFactory
 	modifyDB             func(*sql.DB, string)
 	passwordSecretParser blip.PasswordSecretParser
+
+	// credentialTimeout is set by WithCredentialTimeout. Zero means
+	// DefaultCredentialTimeout, so the zero value factory has the default.
+	// Negative means no timeout.
+	credentialTimeout time.Duration
 }
 
 // ConnFactoryOption configures the default MySQL connection factory.
@@ -46,6 +58,25 @@ type ConnFactoryOption func(*factory)
 func WithPasswordSecretParser(parser blip.PasswordSecretParser) ConnFactoryOption {
 	return func(f *factory) {
 		f.passwordSecretParser = parser
+	}
+}
+
+// WithCredentialTimeout sets how long Make waits for the credentials reload
+// func to return the first credentials. The default is DefaultCredentialTimeout.
+// Zero disables the timeout, so a hung credentials source blocks Make, and
+// therefore a monitor stop or Blip startup, until it returns. It panics if d is
+// negative, so validate a value from user config before passing it. It does
+// not affect credential reloads by the mysql-hotswap-dsn driver, which use the
+// connect context.
+func WithCredentialTimeout(d time.Duration) ConnFactoryOption {
+	if d < 0 {
+		panic(fmt.Sprintf("dbconn.WithCredentialTimeout: negative timeout %s", d))
+	}
+	if d == 0 {
+		d = -1 // no timeout; see factory.credentialTimeout
+	}
+	return func(f *factory) {
+		f.credentialTimeout = d
 	}
 }
 
@@ -128,7 +159,7 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	// Test the credentials reload func, i.e. get the current credentials, which
 	// might just be a static credentials in the Blip config file or another file,
 	// but it could be something dynamic like an Amazon IAM auth token.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := f.credentialContext()
 	defer cancel()
 	credentials, err := credentialFunc(ctx)
 	if err != nil {
@@ -282,6 +313,20 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	}
 
 	return db, RedactedDSN(dsn), nil
+}
+
+// credentialContext returns the context for the first call to the credentials
+// reload func in Make. It has a deadline unless WithCredentialTimeout(0)
+// disabled it.
+func (f factory) credentialContext() (context.Context, context.CancelFunc) {
+	switch {
+	case f.credentialTimeout < 0:
+		return context.WithCancel(context.Background())
+	case f.credentialTimeout == 0:
+		return context.WithTimeout(context.Background(), DefaultCredentialTimeout)
+	default:
+		return context.WithTimeout(context.Background(), f.credentialTimeout)
+	}
 }
 
 // Credentials creates a credentials reload function (callback) based on the

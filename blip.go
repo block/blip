@@ -121,7 +121,7 @@ func DefaultPasswordSecretParser(_ context.Context, cfg ConfigMonitor, payload [
 
 	var secretPayload map[string]interface{}
 	if err := json.Unmarshal(payload, &secretPayload); err != nil {
-		return fmt.Errorf("cannot decode secret as JSON object: %s", err)
+		return fmt.Errorf("cannot decode secret as JSON object: %w", err)
 	}
 	if secretPayload == nil {
 		return fmt.Errorf("secret value is 'null' literal")

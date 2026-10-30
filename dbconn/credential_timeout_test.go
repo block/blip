@@ -5,7 +5,6 @@ package dbconn
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -49,9 +48,6 @@ func TestMakeCredentialTimeoutDefault(t *testing.T) {
 	// via IRSA, AssumeRole, etc.), so Make must wait longer than the old 500ms.
 	awscfg := slowCredentialsConfig(t, 700*time.Millisecond)
 	f := NewConnFactory(testAWSConfigFactory{cfg: awscfg}, nil)
-	if f.credentialTimeout != DefaultCredentialTimeout {
-		t.Errorf("credentialTimeout=%s, expected %s", f.credentialTimeout, DefaultCredentialTimeout)
-	}
 
 	db, _, err := f.Make(passwordSecretMonitor())
 	if err != nil {
@@ -89,21 +85,18 @@ func TestMakeCredentialTimeoutOption(t *testing.T) {
 func TestCredentialContext(t *testing.T) {
 	tests := []struct {
 		name           string
-		opts           []ConnFactoryOption
+		f              factory
 		expectDeadline time.Duration // 0: no deadline
 	}{
-		{"default", nil, DefaultCredentialTimeout},
-		{"option", []ConnFactoryOption{WithCredentialTimeout(5 * time.Second)}, 5 * time.Second},
-		{"disabled", []ConnFactoryOption{WithCredentialTimeout(0)}, 0},
+		{"default", NewConnFactory(nil, nil), DefaultCredentialTimeout},
+		{"zero value", factory{}, DefaultCredentialTimeout},
+		{"option", NewConnFactory(nil, nil, WithCredentialTimeout(5*time.Second)), 5 * time.Second},
+		{"disabled", NewConnFactory(nil, nil, WithCredentialTimeout(0)), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := NewConnFactory(nil, nil, tt.opts...)
 			t0 := time.Now()
-			ctx, cancel, err := f.credentialContext()
-			if err != nil {
-				t.Fatalf("got error %s, expected nil", err)
-			}
+			ctx, cancel := tt.f.credentialContext()
 			defer cancel()
 			deadline, ok := ctx.Deadline()
 			if tt.expectDeadline == 0 {
@@ -122,18 +115,11 @@ func TestCredentialContext(t *testing.T) {
 	}
 }
 
-func TestMakeCredentialTimeoutNegative(t *testing.T) {
-	f := NewConnFactory(nil, nil, WithCredentialTimeout(-time.Second))
-	db, _, err := f.Make(blip.ConfigMonitor{
-		MonitorId: "m1",
-		Hostname:  "127.0.0.1:33997",
-		Username:  "root",
-	})
-	if err == nil {
-		db.Close()
-		t.Fatal("got nil error, expected invalid credential timeout")
-	}
-	if !strings.Contains(err.Error(), "invalid credential timeout") {
-		t.Errorf("got error %q, expected invalid credential timeout", err)
-	}
+func TestWithCredentialTimeoutNegativePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("WithCredentialTimeout(-1s) didn't panic")
+		}
+	}()
+	WithCredentialTimeout(-time.Second)
 }

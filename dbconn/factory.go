@@ -43,7 +43,11 @@ type factory struct {
 	awsConfig            blip.AWSConfigFactory
 	modifyDB             func(*sql.DB, string)
 	passwordSecretParser blip.PasswordSecretParser
-	credentialTimeout    time.Duration
+
+	// credentialTimeout is set by WithCredentialTimeout. Zero means
+	// DefaultCredentialTimeout, so the zero value factory has the default.
+	// Negative means no timeout.
+	credentialTimeout time.Duration
 }
 
 // ConnFactoryOption configures the default MySQL connection factory.
@@ -59,10 +63,16 @@ func WithPasswordSecretParser(parser blip.PasswordSecretParser) ConnFactoryOptio
 
 // WithCredentialTimeout sets how long Make waits for the credentials reload
 // func to return the first credentials. The default is DefaultCredentialTimeout.
-// Zero disables the timeout. A negative value makes Make return an error. It
-// does not affect credential reloads by the mysql-hotswap-dsn driver, which use
-// the connect context.
+// Zero disables the timeout. It panics if d is negative. It does not affect
+// credential reloads by the mysql-hotswap-dsn driver, which use the connect
+// context.
 func WithCredentialTimeout(d time.Duration) ConnFactoryOption {
+	if d < 0 {
+		panic(fmt.Sprintf("dbconn.WithCredentialTimeout: negative timeout %s", d))
+	}
+	if d == 0 {
+		d = -1 // no timeout; see factory.credentialTimeout
+	}
 	return func(f *factory) {
 		f.credentialTimeout = d
 	}
@@ -72,9 +82,8 @@ func WithCredentialTimeout(d time.Duration) ConnFactoryOption {
 // This is the only blip.NewConnFactor. It is created in Server.Defaults.
 func NewConnFactory(awsConfig blip.AWSConfigFactory, modifyDB func(*sql.DB, string), opts ...ConnFactoryOption) factory {
 	f := factory{
-		awsConfig:         awsConfig,
-		modifyDB:          modifyDB,
-		credentialTimeout: DefaultCredentialTimeout,
+		awsConfig: awsConfig,
+		modifyDB:  modifyDB,
 	}
 	for _, opt := range opts {
 		opt(&f)
@@ -140,12 +149,6 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	// a callback that relaods the credentials based on its method: static, file,
 	// Amazon IAM auth token, etc. The special mysql-hotswap-dsn driver (below)
 	// calls this func when MySQL returns an authentication error.
-	ctx, cancel, err := f.credentialContext()
-	if err != nil {
-		return nil, "", fmt.Errorf("%s: %w", cfg.MonitorId, err)
-	}
-	defer cancel()
-
 	credentialFunc, err := f.Credentials(cfg)
 	if err != nil {
 		return nil, "", err
@@ -154,6 +157,8 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 	// Test the credentials reload func, i.e. get the current credentials, which
 	// might just be a static credentials in the Blip config file or another file,
 	// but it could be something dynamic like an Amazon IAM auth token.
+	ctx, cancel := f.credentialContext()
+	defer cancel()
 	credentials, err := credentialFunc(ctx)
 	if err != nil {
 		return nil, "", err
@@ -309,16 +314,17 @@ func (f factory) Make(cfg blip.ConfigMonitor) (*sql.DB, string, error) {
 }
 
 // credentialContext returns the context for the first call to the credentials
-// reload func in Make. It has a deadline unless the credential timeout is zero.
-func (f factory) credentialContext() (context.Context, context.CancelFunc, error) {
-	if f.credentialTimeout < 0 {
-		return nil, nil, fmt.Errorf("invalid credential timeout %s: must be zero or greater", f.credentialTimeout)
+// reload func in Make. It has a deadline unless WithCredentialTimeout(0)
+// disabled it.
+func (f factory) credentialContext() (context.Context, context.CancelFunc) {
+	switch {
+	case f.credentialTimeout < 0:
+		return context.WithCancel(context.Background())
+	case f.credentialTimeout == 0:
+		return context.WithTimeout(context.Background(), DefaultCredentialTimeout)
+	default:
+		return context.WithTimeout(context.Background(), f.credentialTimeout)
 	}
-	if f.credentialTimeout == 0 {
-		return context.Background(), func() {}, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), f.credentialTimeout)
-	return ctx, cancel, nil
 }
 
 // Credentials creates a credentials reload function (callback) based on the

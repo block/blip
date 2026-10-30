@@ -63,9 +63,11 @@ func WithPasswordSecretParser(parser blip.PasswordSecretParser) ConnFactoryOptio
 
 // WithCredentialTimeout sets how long Make waits for the credentials reload
 // func to return the first credentials. The default is DefaultCredentialTimeout.
-// Zero disables the timeout. It panics if d is negative. It does not affect
-// credential reloads by the mysql-hotswap-dsn driver, which use the connect
-// context.
+// Zero disables the timeout, so a hung credentials source blocks Make, and
+// therefore a monitor stop or Blip startup, until it returns. It panics if d is
+// negative, so validate a value from user config before passing it. It does
+// not affect credential reloads by the mysql-hotswap-dsn driver, which use the
+// connect context.
 func WithCredentialTimeout(d time.Duration) ConnFactoryOption {
 	if d < 0 {
 		panic(fmt.Sprintf("dbconn.WithCredentialTimeout: negative timeout %s", d))
